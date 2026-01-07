@@ -16,9 +16,21 @@ A pure Common Lisp implementation of gRPC with HTTP/2, built from scratch for SB
 - All header field representations (indexed, literal with/without indexing)
 - Comprehensive test suite: **216/225 HTTP/2 tests passing (96%)**
 
+**Phase 3: HTTP/2 Streams & Connection - COMPLETE ✓**
+- Complete HTTP/2 stream state machine (idle, open, half-closed, closed)
+- Connection management with stream multiplexing
+- Connection and stream-level flow control windows
+- SETTINGS frame negotiation and application
+- HTTP/2 connection preface handling (client and server)
+- HPACK encoder/decoder integration per connection
+- Thread-safe operations with bordeaux-threads
+- Frame reader/writer with automatic splitting for max frame size
+- Comprehensive test suite: **All Phase 3 tests passing (100%)**
+- **Overall: 267/276 tests passing (96%)**
+
 ## Features
 
-### Currently Implemented (Phases 1-2)
+### Currently Implemented (Phases 1-3)
 - ✓ HTTP/2 frame structures and encoding/decoding
 - ✓ All 10 frame types per RFC 9113
 - ✓ Frame flag handling
@@ -28,13 +40,27 @@ A pure Common Lisp implementation of gRPC with HTTP/2, built from scratch for SB
   - Dynamic table with size management and eviction
   - All header field representations
   - Integer and string encoding with Huffman option
+- ✓ HTTP/2 stream state machine
+  - Complete state transitions (idle, open, half-closed-local, half-closed-remote, closed)
+  - Stream data and header management
+  - Priority handling
+- ✓ HTTP/2 connection management
+  - Client and server connection initialization
+  - Connection preface handling
+  - Stream multiplexing and ID allocation
+  - HPACK encoder/decoder contexts per connection
+- ✓ Flow control
+  - Connection-level and stream-level windows
+  - WINDOW_UPDATE frame processing
+  - Thread-safe window operations
+- ✓ SETTINGS negotiation and frame processing
+- ✓ Frame I/O operations (reading/writing with automatic frame splitting)
 - ✓ Binary utilities for byte array operations
 - ✓ HTTP/2 error codes and conditions
-- ✓ Comprehensive unit tests with FiveAM
+- ✓ Comprehensive unit tests with FiveAM (267/276 passing, 96%)
 
 ### Planned (Future Phases)
-- Phase 3: HTTP/2 streams, connection management, flow control (NEXT)
-- Phase 4: gRPC protocol layer (message framing, metadata, status codes)
+- Phase 4: gRPC protocol layer (message framing, metadata, status codes) **(NEXT)**
 - Phase 5: gRPC client implementation
 - Phase 6: gRPC server implementation
 - Phase 7: Interoperability testing with official gRPC implementations
@@ -96,7 +122,15 @@ clgrpc/
 │   │   └── binary-utils.lisp    # Byte array operations
 │   ├── http2/
 │   │   ├── errors.lisp          # HTTP/2 error codes
-│   │   └── frames.lisp          # Frame encoding/decoding
+│   │   ├── frames.lisp          # Frame encoding/decoding
+│   │   ├── huffman.lisp         # Huffman coding
+│   │   ├── hpack.lisp           # HPACK header compression
+│   │   ├── settings.lisp        # SETTINGS frame handling
+│   │   ├── flow-control.lisp    # Flow control windows
+│   │   ├── stream.lisp          # Stream state machine
+│   │   ├── connection.lisp      # Connection management
+│   │   ├── frame-reader.lisp    # Reading frames from streams
+│   │   └── frame-writer.lisp    # Writing frames to streams
 │   ├── grpc/                    # gRPC layer (stubs)
 │   ├── transport/               # Socket/TLS layer (stubs)
 │   ├── client/                  # Client implementation (stubs)
@@ -104,7 +138,11 @@ clgrpc/
 ├── tests/
 │   ├── package.lisp
 │   └── http2/
-│       └── frame-tests.lisp     # Comprehensive frame tests
+│       ├── frame-tests.lisp     # Frame encoding/decoding tests
+│       ├── huffman-tests.lisp   # Huffman coding tests
+│       ├── hpack-tests.lisp     # HPACK compression tests
+│       ├── stream-tests.lisp    # Stream state machine tests
+│       └── connection-tests.lisp # Connection management tests
 └── examples/                    # Future examples
 ```
 
@@ -172,7 +210,7 @@ The library emphasizes correctness through comprehensive testing:
 
 See the [implementation plan](.claude/plans/stateful-orbiting-kay.md) for detailed phase breakdown and milestones.
 
-**Current Focus**: Phase 2 - HPACK header compression and Huffman coding
+**Current Focus**: Phase 4 - gRPC protocol layer (message framing, metadata, status codes)
 
 ## License
 
