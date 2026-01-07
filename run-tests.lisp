@@ -22,4 +22,4 @@
 
 ;; Run tests
 (format t "~%Running tests...~%~%")
-(fiveam:run! 'clgrpc-tests:frame-tests)
+(fiveam:run! 'clgrpc-tests:http2-tests)

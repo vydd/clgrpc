@@ -14,7 +14,9 @@
 
    (:module "http2"
     :components
-    ((:file "frame-tests")))
+    ((:file "frame-tests")
+     (:file "huffman-tests")
+     (:file "hpack-tests")))
 
    (:module "grpc"
     :components

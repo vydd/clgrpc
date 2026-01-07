@@ -25,7 +25,9 @@
    (:module "http2"
     :components
     ((:file "errors")
-     (:file "frames")))
+     (:file "huffman")
+     (:file "hpack" :depends-on ("huffman" "errors"))
+     (:file "frames" :depends-on ("errors"))))
 
    (:module "grpc"
     :components

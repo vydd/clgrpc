@@ -89,7 +89,35 @@
    #:make-ping-frame
    #:make-goaway-frame
    #:make-window-update-frame
-   #:make-continuation-frame))
+   #:make-continuation-frame
+
+   ;; Huffman coding
+   #:huffman-encode
+   #:huffman-decode
+   #:huffman-encode-string
+   #:huffman-decode-string
+
+   ;; HPACK
+   #:hpack-context
+   #:make-hpack-context
+   #:hpack-context-dynamic-table
+   #:hpack-context-dynamic-table-size
+   #:hpack-context-max-dynamic-table-size
+   #:hpack-encode-header
+   #:hpack-decode-header
+   #:hpack-encode-headers
+   #:hpack-decode-headers
+   #:hpack-lookup-index
+   #:hpack-find-index
+   #:hpack-find-name-index
+   #:hpack-dynamic-table-add
+   #:hpack-encode-integer
+   #:hpack-decode-integer
+   #:hpack-encode-string
+   #:hpack-decode-string
+   #:hpack-encode-indexed
+   #:hpack-encode-literal-with-indexing
+   #:hpack-encode-literal-without-indexing))
 
 (defpackage #:clgrpc.grpc
   (:documentation "gRPC protocol implementation")
