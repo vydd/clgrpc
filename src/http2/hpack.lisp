@@ -81,8 +81,11 @@
   (size 0 :type fixnum))  ; Size in bytes (name-len + value-len + 32)
 
 (defun hpack-entry-bytes (name value)
-  "Calculate size of header entry in bytes (RFC 7541 Section 4.1)"
-  (+ (length name) (length value) 32))
+  "Calculate size of header entry in bytes (RFC 7541 Section 4.1).
+   Accepts keywords, symbols, or strings for name/value."
+  (let ((norm-name (normalize-header-field name))
+        (norm-value (normalize-header-field value)))
+    (+ (length norm-name) (length norm-value) 32)))
 
 (defstruct hpack-context
   "HPACK compression context with dynamic table"
@@ -104,9 +107,12 @@
                (vector-pop table)))))
 
 (defun hpack-dynamic-table-add (context name value)
-  "Add entry to dynamic table (at index 0, shifting others)"
-  (let* ((size (hpack-entry-bytes name value))
-         (entry (make-hpack-entry :name name :value value :size size))
+  "Add entry to dynamic table (at index 0, shifting others).
+   Accepts keywords, symbols, or strings for name/value - normalizes to strings."
+  (let* ((norm-name (normalize-header-field name))
+         (norm-value (normalize-header-field value))
+         (size (hpack-entry-bytes norm-name norm-value))
+         (entry (make-hpack-entry :name norm-name :value norm-value :size size))
          (table (hpack-context-dynamic-table context)))
 
     ;; Check if entry fits in table at all
@@ -143,33 +149,39 @@
            (cons (hpack-entry-name entry) (hpack-entry-value entry))))))))
 
 (defun hpack-find-index (context name value)
-  "Find index of exact header match. Returns index or nil."
-  ;; Search static table
-  (loop for i from 1 to +hpack-static-table-size+
-        for entry = (aref *hpack-static-table* i)
-        when (and entry
-                  (equal (car entry) name)
-                  (equal (cdr entry) value))
-        return i)
-  ;; Search dynamic table
-  (loop for i from 0 below (length (hpack-context-dynamic-table context))
-        for entry = (aref (hpack-context-dynamic-table context) i)
-        when (and (equal (hpack-entry-name entry) name)
-                  (equal (hpack-entry-value entry) value))
-        return (+ i +hpack-static-table-size+ 1)))
+  "Find index of exact header match. Returns index or nil.
+   Normalizes name/value for comparison (handles keywords vs strings)."
+  (let ((norm-name (normalize-header-field name))
+        (norm-value (normalize-header-field value)))
+    ;; Search static table first, then dynamic table
+    (or (loop for i from 1 to +hpack-static-table-size+
+              for entry = (aref *hpack-static-table* i)
+              when (and entry
+                        (string= (normalize-header-field (car entry)) norm-name)
+                        (string= (normalize-header-field (cdr entry)) norm-value))
+              return i)
+        ;; Search dynamic table
+        (loop for i from 0 below (length (hpack-context-dynamic-table context))
+              for entry = (aref (hpack-context-dynamic-table context) i)
+              when (and (string= (normalize-header-field (hpack-entry-name entry)) norm-name)
+                        (string= (normalize-header-field (hpack-entry-value entry)) norm-value))
+              return (+ i +hpack-static-table-size+ 1)))))
 
 (defun hpack-find-name-index (context name)
-  "Find index of header name (ignoring value). Returns index or nil."
-  ;; Search static table
-  (loop for i from 1 to +hpack-static-table-size+
-        for entry = (aref *hpack-static-table* i)
-        when (and entry (equal (car entry) name))
-        return i)
-  ;; Search dynamic table
-  (loop for i from 0 below (length (hpack-context-dynamic-table context))
-        for entry = (aref (hpack-context-dynamic-table context) i)
-        when (equal (hpack-entry-name entry) name)
-        return (+ i +hpack-static-table-size+ 1)))
+  "Find index of header name (ignoring value). Returns index or nil.
+   Normalizes name for comparison (handles keywords vs strings)."
+  (let ((norm-name (normalize-header-field name)))
+    ;; Search static table first, then dynamic table
+    (or (loop for i from 1 to +hpack-static-table-size+
+              for entry = (aref *hpack-static-table* i)
+              when (and entry
+                        (string= (normalize-header-field (car entry)) norm-name))
+              return i)
+        ;; Search dynamic table
+        (loop for i from 0 below (length (hpack-context-dynamic-table context))
+              for entry = (aref (hpack-context-dynamic-table context) i)
+              when (string= (normalize-header-field (hpack-entry-name entry)) norm-name)
+              return (+ i +hpack-static-table-size+ 1)))))
 
 ;;; Integer Encoding/Decoding with Prefix (RFC 7541 Section 5.1)
 
@@ -218,11 +230,21 @@
 
 ;;; String Encoding/Decoding (RFC 7541 Section 5.2)
 
+(defun normalize-header-field (field)
+  "Normalize header field (keyword or string) to string.
+   Handles both HTTP/2 pseudo-headers (keywords) and regular headers (strings)."
+  (etypecase field
+    (string field)
+    (keyword (string-downcase (symbol-name field)))
+    (symbol (string-downcase (symbol-name field)))))
+
 (defun hpack-encode-string (string &key huffman)
-  "Encode string for HPACK. Returns byte array."
-  (let* ((octets (if huffman
-                    (huffman-encode-string string)
-                    (babel:string-to-octets string :encoding :utf-8)))
+  "Encode string for HPACK. Returns byte array.
+   Accepts strings, keywords, or symbols - all normalized to strings."
+  (let* ((str (normalize-header-field string))
+         (octets (if huffman
+                    (huffman-encode-string str)
+                    (babel:string-to-octets str :encoding :utf-8)))
          (length (length octets))
          (length-bytes (hpack-encode-integer length 7))
          (result (make-byte-array (+ (length length-bytes) length))))
