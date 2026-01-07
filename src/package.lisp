@@ -218,6 +218,25 @@
    #:hpack-encode-literal-with-indexing
    #:hpack-encode-literal-without-indexing))
 
+(defpackage #:clgrpc.transport
+  (:documentation "Transport layer (TCP/TLS) for gRPC")
+  (:use #:cl #:clgrpc.utils)
+  (:export
+   ;; Socket operations
+   #:make-tcp-socket
+   #:close-socket
+   #:socket-stream
+
+   ;; TLS operations
+   #:tls-wrap-socket
+   #:tls-connect
+   #:tls-close
+
+   ;; Buffer operations
+   #:make-buffer
+   #:buffer-read
+   #:buffer-write))
+
 (defpackage #:clgrpc.grpc
   (:documentation "gRPC protocol implementation")
   (:use #:cl #:clgrpc.utils)
@@ -324,7 +343,7 @@
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")
-  (:use #:cl #:clgrpc.grpc #:clgrpc.http2)
+  (:use #:cl #:clgrpc.utils #:clgrpc.grpc #:clgrpc.http2 #:clgrpc.transport)
   (:export
    ;; Client API
    #:grpc-channel
