@@ -16,7 +16,9 @@
     :components
     ((:file "frame-tests")
      (:file "huffman-tests")
-     (:file "hpack-tests")))
+     (:file "hpack-tests")
+     (:file "stream-tests")
+     (:file "connection-tests")))
 
    (:module "grpc"
     :components

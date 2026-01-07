@@ -97,6 +97,105 @@
    #:huffman-encode-string
    #:huffman-decode-string
 
+   ;; SETTINGS
+   #:http2-settings
+   #:make-http2-settings
+   #:make-default-settings
+   #:parse-settings-frame
+   #:apply-settings
+   #:make-settings-frame-from-settings
+   #:http2-settings-header-table-size
+   #:http2-settings-enable-push
+   #:http2-settings-max-concurrent-streams
+   #:http2-settings-initial-window-size
+   #:http2-settings-max-frame-size
+   #:http2-settings-max-header-list-size
+   #:+settings-header-table-size+
+   #:+settings-enable-push+
+   #:+settings-max-concurrent-streams+
+   #:+settings-initial-window-size+
+   #:+settings-max-frame-size+
+   #:+settings-max-header-list-size+
+
+   ;; Flow Control
+   #:flow-control-window
+   #:make-flow-control-window
+   #:window-available-p
+   #:window-consume
+   #:window-replenish
+   #:window-size
+   #:process-window-update
+   #:+default-initial-window-size+
+
+   ;; Stream
+   #:http2-stream
+   #:make-http2-stream
+   #:stream-id
+   #:stream-state
+   #:stream-send-window
+   #:stream-recv-window
+   #:stream-send-headers
+   #:stream-recv-headers
+   #:stream-send-end-stream
+   #:stream-recv-end-stream
+   #:stream-send-rst-stream
+   #:stream-add-received-data
+   #:stream-add-received-headers
+   #:stream-get-all-received-data
+   #:stream-can-send-data-p
+   #:stream-can-recv-data-p
+   #:stream-is-closed-p
+   #:stream-set-priority
+   #:http2-stream-headers-received
+   #:http2-stream-trailers-received
+   #:http2-stream-priority-weight
+   #:http2-stream-priority-depends-on
+   #:http2-stream-priority-exclusive
+
+   ;; Connection
+   #:http2-connection
+   #:make-http2-connection
+   #:make-client-connection
+   #:make-server-connection
+   #:connection-get-stream
+   #:connection-create-stream
+   #:connection-get-or-create-stream
+   #:connection-allocate-stream-id
+   #:connection-send-frame
+   #:connection-read-frame
+   #:connection-send-settings
+   #:connection-send-settings-ack
+   #:connection-send-window-update
+   #:connection-send-ping
+   #:connection-send-goaway
+   #:connection-send-client-preface
+   #:connection-receive-client-preface
+   #:initialize-client-connection
+   #:initialize-server-connection
+   #:connection-is-closed-p
+   #:connection-close
+   #:http2-connection-is-client
+   #:http2-connection-streams
+   #:http2-connection-next-stream-id
+   #:http2-connection-local-settings
+   #:http2-connection-remote-settings
+   #:http2-connection-hpack-encoder
+   #:http2-connection-hpack-decoder
+   #:http2-connection-connection-send-window
+   #:http2-connection-connection-recv-window
+   #:http2-connection-goaway-sent
+   #:http2-connection-goaway-received
+   #:http2-connection-last-stream-id
+
+   ;; Frame I/O
+   #:read-frame-from-stream
+   #:write-frame-to-stream
+   #:write-frames-to-stream
+   #:split-data-into-frames
+   #:split-headers-into-frames
+   #:read-continuation-frames
+   #:combine-header-fragments
+
    ;; HPACK
    #:hpack-context
    #:make-hpack-context

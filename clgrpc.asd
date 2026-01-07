@@ -27,7 +27,13 @@
     ((:file "errors")
      (:file "huffman")
      (:file "hpack" :depends-on ("huffman" "errors"))
-     (:file "frames" :depends-on ("errors"))))
+     (:file "frames" :depends-on ("errors"))
+     (:file "settings" :depends-on ("frames" "errors"))
+     (:file "flow-control" :depends-on ("errors"))
+     (:file "stream" :depends-on ("frames" "flow-control" "errors" "settings"))
+     (:file "frame-reader" :depends-on ("frames"))
+     (:file "frame-writer" :depends-on ("frames"))
+     (:file "connection" :depends-on ("stream" "frames" "frame-reader" "frame-writer" "hpack" "settings"))))
 
    (:module "grpc"
     :components
