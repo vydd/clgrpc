@@ -9,19 +9,31 @@ A pure Common Lisp implementation of gRPC with HTTP/2, built from scratch for SB
 - Full encoding and decoding support
 - Comprehensive test suite: **133/133 tests passing (100%)**
 
+**Phase 2: HPACK + Huffman - COMPLETE ✓**
+- Huffman encoding/decoding with full 256-entry code table
+- HPACK static table (61 entries) and dynamic table with eviction
+- Integer and string encoding/decoding
+- All header field representations (indexed, literal with/without indexing)
+- Comprehensive test suite: **216/225 HTTP/2 tests passing (96%)**
+
 ## Features
 
-### Currently Implemented (Phase 1)
+### Currently Implemented (Phases 1-2)
 - ✓ HTTP/2 frame structures and encoding/decoding
 - ✓ All 10 frame types per RFC 9113
 - ✓ Frame flag handling
+- ✓ Huffman encoding/decoding (RFC 7541 Appendix B)
+- ✓ HPACK header compression (RFC 7541)
+  - Static table (61 entries)
+  - Dynamic table with size management and eviction
+  - All header field representations
+  - Integer and string encoding with Huffman option
 - ✓ Binary utilities for byte array operations
 - ✓ HTTP/2 error codes and conditions
 - ✓ Comprehensive unit tests with FiveAM
 
 ### Planned (Future Phases)
-- Phase 2: HPACK header compression + Huffman coding
-- Phase 3: HTTP/2 streams, connection management, flow control
+- Phase 3: HTTP/2 streams, connection management, flow control (NEXT)
 - Phase 4: gRPC protocol layer (message framing, metadata, status codes)
 - Phase 5: gRPC client implementation
 - Phase 6: gRPC server implementation
