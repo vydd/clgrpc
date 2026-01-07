@@ -54,3 +54,40 @@
 
 (defconstant +grpc-status-unauthenticated+ 16
   "The request does not have valid authentication credentials for the operation.")
+
+;;; Status Code Utilities
+
+(defun valid-status-code-p (code)
+  "Check if code is a valid gRPC status code (0-16)"
+  (and (integerp code) (<= 0 code 16)))
+
+(defun status-code-name (code)
+  "Get human-readable name for status code"
+  (case code
+    (0 "OK")
+    (1 "CANCELLED")
+    (2 "UNKNOWN")
+    (3 "INVALID_ARGUMENT")
+    (4 "DEADLINE_EXCEEDED")
+    (5 "NOT_FOUND")
+    (6 "ALREADY_EXISTS")
+    (7 "PERMISSION_DENIED")
+    (8 "RESOURCE_EXHAUSTED")
+    (9 "FAILED_PRECONDITION")
+    (10 "ABORTED")
+    (11 "OUT_OF_RANGE")
+    (12 "UNIMPLEMENTED")
+    (13 "INTERNAL")
+    (14 "UNAVAILABLE")
+    (15 "DATA_LOSS")
+    (16 "UNAUTHENTICATED")
+    (t "UNKNOWN")))
+
+(defun retryable-status-p (code)
+  "Check if status code indicates a retryable error"
+  (member code '(1   ; CANCELLED
+                 4   ; DEADLINE_EXCEEDED
+                 8   ; RESOURCE_EXHAUSTED
+                 10  ; ABORTED
+                 14  ; UNAVAILABLE
+                 )))

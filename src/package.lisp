@@ -240,23 +240,87 @@
    #:+grpc-status-unavailable+
    #:+grpc-status-data-loss+
    #:+grpc-status-unauthenticated+
+   #:valid-status-code-p
+   #:status-code-name
+   #:retryable-status-p
 
    ;; Errors
    #:grpc-error
    #:grpc-error-status-code
    #:grpc-error-message
    #:grpc-error-details
+   #:grpc-cancelled
+   #:grpc-invalid-argument
+   #:grpc-deadline-exceeded
+   #:grpc-not-found
+   #:grpc-already-exists
+   #:grpc-permission-denied
+   #:grpc-resource-exhausted
+   #:grpc-failed-precondition
+   #:grpc-aborted
+   #:grpc-out-of-range
+   #:grpc-unimplemented
+   #:grpc-internal
+   #:grpc-unavailable
+   #:grpc-data-loss
+   #:grpc-unauthenticated
+   #:make-grpc-error
+   #:signal-grpc-error
+   #:signal-grpc-cancelled
+   #:signal-grpc-invalid-argument
+   #:signal-grpc-deadline-exceeded
+   #:signal-grpc-not-found
+   #:signal-grpc-already-exists
+   #:signal-grpc-permission-denied
+   #:signal-grpc-resource-exhausted
+   #:signal-grpc-failed-precondition
+   #:signal-grpc-aborted
+   #:signal-grpc-out-of-range
+   #:signal-grpc-unimplemented
+   #:signal-grpc-internal
+   #:signal-grpc-unavailable
+   #:signal-grpc-data-loss
+   #:signal-grpc-unauthenticated
 
    ;; Protocol
+   #:+grpc-compressed-flag-none+
+   #:+grpc-compressed-flag-gzip+
+   #:+grpc-message-header-size+
+   #:+grpc-max-message-size+
    #:encode-grpc-message
    #:decode-grpc-message
+   #:decode-grpc-message-header
+   #:read-grpc-message-from-stream
+   #:write-grpc-message-to-stream
+   #:split-grpc-messages
+   #:join-grpc-messages
 
    ;; Metadata
+   #:+grpc-content-type+
+   #:+grpc-te+
+   #:metadata-key-binary-p
    #:encode-metadata
    #:decode-metadata
+   #:encode-grpc-timeout
+   #:decode-grpc-timeout
    #:encode-grpc-request-headers
    #:encode-grpc-response-headers
-   #:decode-grpc-trailers))
+   #:encode-grpc-trailers
+   #:decode-grpc-trailers
+   #:grpc-content-type-p
+
+   ;; Message
+   #:serialize-message
+   #:deserialize-message
+   #:serialize-message-impl
+   #:deserialize-message-impl
+   #:encode-grpc-request-message
+   #:decode-grpc-request-message
+   #:encode-grpc-response-message
+   #:decode-grpc-response-message
+   #:simple-text-message
+   #:message-text
+   #:make-simple-text-message))
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")
