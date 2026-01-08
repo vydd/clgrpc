@@ -4,7 +4,7 @@
 
 ;;; HTTP/2 Connection Preface (RFC 9113 Section 3.4)
 
-(defconstant +http2-client-preface+
+(defparameter +http2-client-preface+
   "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
   "HTTP/2 client connection preface")
 

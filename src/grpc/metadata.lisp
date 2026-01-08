@@ -9,10 +9,10 @@
 
 ;;; gRPC Header Constants
 
-(defconstant +grpc-content-type+ "application/grpc+proto"
+(defparameter +grpc-content-type+ "application/grpc+proto"
   "gRPC content type for protobuf messages")
 
-(defconstant +grpc-te+ "trailers"
+(defparameter +grpc-te+ "trailers"
   "TE header value required by gRPC")
 
 ;;; Metadata Encoding

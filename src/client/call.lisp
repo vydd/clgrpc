@@ -38,10 +38,10 @@
      Stream ID on success, signals error on failure"
   (let* ((conn (grpc-call-connection call))
          (stream-id (http2-connection-next-stream-id conn))
-         (hpack-ctx (http2-connection-encoder-context conn)))
+         (hpack-ctx (http2-connection-hpack-encoder conn)))
 
     ;; Build request headers
-    (let ((headers (grpc-build-request-headers
+    (let ((headers (encode-grpc-request-headers
                     (grpc-call-service call)
                     (grpc-call-method call)
                     :timeout (grpc-call-timeout call)
@@ -57,7 +57,7 @@
                               :flags +flag-end-headers+  ; No CONTINUATION for now
                               :stream-id stream-id
                               :payload headers-bytes)))
-          (http2-write-frame (http2-connection-socket conn) headers-frame))))
+          (write-frame-to-stream headers-frame (http2-connection-socket conn)))))
 
     ;; Frame request with gRPC message framing
     (let ((grpc-message (encode-grpc-message request-bytes)))
@@ -69,7 +69,7 @@
                          :flags +flag-end-stream+
                          :stream-id stream-id
                          :payload grpc-message)))
-        (http2-write-frame (http2-connection-socket conn) data-frame)))
+        (write-frame-to-stream data-frame (http2-connection-socket conn))))
 
     ;; Update call state
     (setf (grpc-call-stream-id call) stream-id)
@@ -221,7 +221,7 @@
 
 ;;; High-Level Call API
 
-(defun make-grpc-call (connection service method &key timeout metadata)
+(defun create-grpc-call (connection service method &key timeout metadata)
   "Create a new gRPC call.
 
    Args:

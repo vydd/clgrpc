@@ -359,7 +359,7 @@
 
 (defpackage #:clgrpc.server
   (:documentation "gRPC server implementation")
-  (:use #:cl #:clgrpc.grpc #:clgrpc.http2)
+  (:use #:cl #:clgrpc.utils #:clgrpc.grpc #:clgrpc.http2 #:clgrpc.transport)
   (:export
    ;; Server API
    #:grpc-server

@@ -77,7 +77,7 @@
   (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
     (loop for conn across (connection-pool-connections pool)
           do (when (http2-connection-open-p conn)
-               (http2-connection-close conn)))
+               (connection-close conn)))
     (setf (fill-pointer (connection-pool-connections pool)) 0)))
 
 ;;; HTTP/2 Connection Creation
@@ -115,9 +115,9 @@
       ;; Create HTTP/2 connection
       (let ((conn (make-http2-connection
                    :socket socket
-                   :role :client
-                   :encoder-context (make-hpack-context)
-                   :decoder-context (make-hpack-context))))
+                   :is-client t
+                   :hpack-encoder (make-hpack-context)
+                   :hpack-decoder (make-hpack-context))))
 
         ;; Send client connection preface
         (http2-send-client-preface conn)
@@ -154,7 +154,7 @@
                   :flags 0
                   :stream-id 0
                   :payload payload)))
-      (http2-write-frame (http2-connection-socket connection) frame))))
+      (write-frame-to-stream frame (http2-connection-socket connection)))))
 
 (defun start-connection-frame-reader (connection)
   "Start background thread to read frames from connection.
@@ -164,7 +164,7 @@
    (lambda ()
      (handler-case
          (loop
-           (let ((frame (http2-read-frame (http2-connection-socket connection))))
+           (let ((frame (read-frame-from-stream (http2-connection-socket connection))))
              (unless frame
                ;; EOF - connection closed
                (return))
@@ -174,7 +174,7 @@
        (error (e)
          ;; Log error and close connection
          (format *error-output* "Frame reader error: ~A~%" e)
-         (http2-connection-close connection))))
+         (connection-close connection))))
    :name "http2-frame-reader"))
 
 (defun dispatch-frame-to-call (connection frame)
@@ -191,7 +191,7 @@
     (cond
       ((= frame-type +frame-type-headers+)
        ;; Decode headers
-       (let* ((decoder-ctx (http2-connection-decoder-context connection))
+       (let* ((decoder-ctx (http2-connection-hpack-decoder connection))
               (headers (hpack-decode-headers decoder-ctx (http2-frame-payload frame)))
               (end-stream (logtest (http2-frame-flags frame) +flag-end-stream+))
               (call (find-call-by-stream-id connection stream-id)))
@@ -220,7 +220,7 @@
                            :flags +flag-ack+
                            :stream-id 0
                            :payload (make-byte-array 0))))
-           (http2-write-frame (http2-connection-socket connection) ack-frame))))
+           (write-frame-to-stream ack-frame (http2-connection-socket connection)))))
 
       ((= frame-type +frame-type-goaway+)
        ;; Server is shutting down connection
