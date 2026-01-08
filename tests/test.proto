@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package test;
+
+// A simple person message
+message Person {
+  string name = 1;
+  int32 id = 2;
+  string email = 3;
+  repeated string phones = 4;
+}
+
+// Address message
+message Address {
+  string street = 1;
+  string city = 2;
+  int32 zip_code = 3;
+}
+
+// Employee with nested messages
+message Employee {
+  Person person = 1;
+  Address address = 2;
+  double salary = 3;
+  bool active = 4;
+}
