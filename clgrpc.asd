@@ -12,7 +12,8 @@
                #:alexandria
                #:trivial-gray-streams
                #:fast-io
-               #:babel)
+               #:babel
+               ) ;; ieee-floats not needed - we implement float encoding ourselves
   :pathname "src"
   :serial t
   :components
@@ -42,7 +43,8 @@
      (:file "metadata")
      (:file "message")
      (:file "protocol")
-     (:file "protobuf-simple")))
+     (:file "protobuf-simple")
+     (:file "protobuf" :depends-on ("protobuf-simple"))))
 
    (:module "transport"
     :components

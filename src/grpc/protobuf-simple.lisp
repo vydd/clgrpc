@@ -1,19 +1,19 @@
-;;;; protobuf-simple.lisp - Simple protobuf encoding for basic messages
+;;;; protobuf-simple.lisp - Complete protobuf implementation
 ;;;;
-;;;; This is a minimal protobuf implementation for simple string messages.
-;;;; For production use, integrate cl-protobufs or another full implementation.
+;;;; Full Protocol Buffers (proto3) implementation for gRPC.
+;;;; Supports all basic types, repeated fields, and embedded messages.
 ;;;;
 ;;;; Wire format: https://protobuf.dev/programming-guides/encoding/
 
 (in-package #:clgrpc.grpc)
 
 ;;; Protobuf Wire Types
-(defconstant +wire-type-varint+ 0)
-(defconstant +wire-type-64bit+ 1)
-(defconstant +wire-type-length-delimited+ 2)
-(defconstant +wire-type-start-group+ 3)
-(defconstant +wire-type-end-group+ 4)
-(defconstant +wire-type-32bit+ 5)
+(defparameter +wire-type-varint+ 0)
+(defparameter +wire-type-64bit+ 1)
+(defparameter +wire-type-length-delimited+ 2)
+(defparameter +wire-type-start-group+ 3)
+(defparameter +wire-type-end-group+ 4)
+(defparameter +wire-type-32bit+ 5)
 
 ;;; Varint Encoding
 
@@ -43,6 +43,97 @@
         (incf shift 7)
         (when (zerop (logand byte #x80))
           (return (values result pos)))))))
+
+;;; Zigzag Encoding (for signed integers)
+
+(defun encode-zigzag-32 (value)
+  "Encode signed 32-bit integer using zigzag encoding.
+   Maps: 0 → 0, -1 → 1, 1 → 2, -2 → 3, 2 → 4, ..."
+  (logxor (ash value 1) (ash value -31)))
+
+(defun decode-zigzag-32 (value)
+  "Decode zigzag-encoded signed 32-bit integer."
+  (logxor (ash value -1) (- (logand value 1))))
+
+(defun encode-zigzag-64 (value)
+  "Encode signed 64-bit integer using zigzag encoding."
+  (logxor (ash value 1) (ash value -63)))
+
+(defun decode-zigzag-64 (value)
+  "Decode zigzag-encoded signed 64-bit integer."
+  (logxor (ash value -1) (- (logand value 1))))
+
+;;; Fixed-Width Integer Encoding
+
+(defun encode-fixed32 (value)
+  "Encode 32-bit fixed-width integer (little-endian). Returns 4-byte array."
+  (let ((result (make-array 4 :element-type '(unsigned-byte 8))))
+    (setf (aref result 0) (logand value #xFF))
+    (setf (aref result 1) (logand (ash value -8) #xFF))
+    (setf (aref result 2) (logand (ash value -16) #xFF))
+    (setf (aref result 3) (logand (ash value -24) #xFF))
+    result))
+
+(defun decode-fixed32 (bytes offset)
+  "Decode 32-bit fixed-width integer. Returns (values value new-offset)."
+  (let ((value (logior (aref bytes offset)
+                      (ash (aref bytes (+ offset 1)) 8)
+                      (ash (aref bytes (+ offset 2)) 16)
+                      (ash (aref bytes (+ offset 3)) 24))))
+    (values value (+ offset 4))))
+
+(defun encode-fixed64 (value)
+  "Encode 64-bit fixed-width integer (little-endian). Returns 8-byte array."
+  (let ((result (make-array 8 :element-type '(unsigned-byte 8))))
+    (loop for i from 0 to 7
+          do (setf (aref result i) (logand (ash value (* i -8)) #xFF)))
+    result))
+
+(defun decode-fixed64 (bytes offset)
+  "Decode 64-bit fixed-width integer. Returns (values value new-offset)."
+  (let ((value 0))
+    (loop for i from 0 to 7
+          do (setf value (logior value (ash (aref bytes (+ offset i)) (* i 8)))))
+    (values value (+ offset 8))))
+
+;;; Floating Point Encoding (IEEE 754)
+
+(defun pb-encode-float (value)
+  "Encode 32-bit float (IEEE 754). Returns 4-byte array."
+  ;; Use SBCL's internal float representation
+  #+sbcl
+  (let ((bits (sb-kernel:single-float-bits value)))
+    (encode-fixed32 bits))
+  #-sbcl
+  (error "Float encoding not implemented for this Lisp"))
+
+(defun pb-decode-float (bytes offset)
+  "Decode 32-bit float (IEEE 754). Returns (values value new-offset)."
+  (multiple-value-bind (bits new-offset)
+      (decode-fixed32 bytes offset)
+    #+sbcl
+    (values (sb-kernel:make-single-float bits) new-offset)
+    #-sbcl
+    (error "Float decoding not implemented for this Lisp")))
+
+(defun pb-encode-double (value)
+  "Encode 64-bit double (IEEE 754). Returns 8-byte array."
+  #+sbcl
+  (let ((bits (sb-kernel:double-float-bits value)))
+    (encode-fixed64 bits))
+  #-sbcl
+  (error "Double encoding not implemented for this Lisp"))
+
+(defun pb-decode-double (bytes offset)
+  "Decode 64-bit double (IEEE 754). Returns (values value new-offset)."
+  (multiple-value-bind (bits new-offset)
+      (decode-fixed64 bytes offset)
+    #+sbcl
+    (let ((hi (logand (ash bits -32) #xFFFFFFFF))
+          (lo (logand bits #xFFFFFFFF)))
+      (values (sb-kernel:make-double-float hi lo) new-offset))
+    #-sbcl
+    (error "Double decoding not implemented for this Lisp")))
 
 ;;; Field Encoding
 
@@ -75,6 +166,100 @@
     (let ((string-bytes (subseq bytes new-offset (+ new-offset length))))
       (values (babel:octets-to-string string-bytes :encoding :utf-8)
               (+ new-offset length)))))
+
+(defun encode-bytes-field (field-number bytes-value)
+  "Encode a bytes field. Returns byte array."
+  (let* ((tag (encode-field-tag field-number +wire-type-length-delimited+))
+         (length (encode-varint (length bytes-value)))
+         (result (make-array (+ (length tag) (length length) (length bytes-value))
+                            :element-type '(unsigned-byte 8))))
+    (replace result tag)
+    (replace result length :start1 (length tag))
+    (replace result bytes-value :start1 (+ (length tag) (length length)))
+    result))
+
+(defun decode-bytes-field (bytes offset)
+  "Decode a length-delimited bytes field. Returns (values bytes-array new-offset)."
+  (multiple-value-bind (length new-offset)
+      (decode-varint bytes offset)
+    (let ((bytes-value (subseq bytes new-offset (+ new-offset length))))
+      (values bytes-value (+ new-offset length)))))
+
+;;; Generic Field Encoding (all protobuf types)
+
+(defun encode-int32-field (field-number value)
+  "Encode int32 field (varint)."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-varint+)
+               (encode-varint (logand value #xFFFFFFFF))))
+
+(defun encode-int64-field (field-number value)
+  "Encode int64 field (varint)."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-varint+)
+               (encode-varint value)))
+
+(defun encode-uint32-field (field-number value)
+  "Encode uint32 field (varint)."
+  (encode-int32-field field-number value))
+
+(defun encode-uint64-field (field-number value)
+  "Encode uint64 field (varint)."
+  (encode-int64-field field-number value))
+
+(defun encode-sint32-field (field-number value)
+  "Encode sint32 field (zigzag-encoded varint)."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-varint+)
+               (encode-varint (encode-zigzag-32 value))))
+
+(defun encode-sint64-field (field-number value)
+  "Encode sint64 field (zigzag-encoded varint)."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-varint+)
+               (encode-varint (encode-zigzag-64 value))))
+
+(defun encode-bool-field (field-number value)
+  "Encode bool field (varint 0 or 1)."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-varint+)
+               (encode-varint (if value 1 0))))
+
+(defun encode-fixed32-field (field-number value)
+  "Encode fixed32 field."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-32bit+)
+               (encode-fixed32 value)))
+
+(defun encode-fixed64-field (field-number value)
+  "Encode fixed64 field."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-64bit+)
+               (encode-fixed64 value)))
+
+(defun encode-sfixed32-field (field-number value)
+  "Encode sfixed32 field (signed fixed32)."
+  (encode-fixed32-field field-number value))
+
+(defun encode-sfixed64-field (field-number value)
+  "Encode sfixed64 field (signed fixed64)."
+  (encode-fixed64-field field-number value))
+
+(defun encode-float-field (field-number value)
+  "Encode float field."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-32bit+)
+               (pb-encode-float value)))
+
+(defun encode-double-field (field-number value)
+  "Encode double field."
+  (concatenate '(vector (unsigned-byte 8))
+               (encode-field-tag field-number +wire-type-64bit+)
+               (pb-encode-double value)))
+
+(defun encode-enum-field (field-number value)
+  "Encode enum field (varint)."
+  (encode-int32-field field-number value))
 
 ;;; HelloWorld Message Encoding
 ;;;
