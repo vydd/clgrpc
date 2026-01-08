@@ -84,9 +84,10 @@
 
 (defun encode-fixed64 (value)
   "Encode 64-bit fixed-width integer (little-endian). Returns 8-byte array."
-  (let ((result (make-array 8 :element-type '(unsigned-byte 8))))
+  (let ((result (make-array 8 :element-type '(unsigned-byte 8)))
+        (unsigned-value (logand value #xFFFFFFFFFFFFFFFF)))
     (loop for i from 0 to 7
-          do (setf (aref result i) (logand (ash value (* i -8)) #xFF)))
+          do (setf (aref result i) (logand (ash unsigned-value (* i -8)) #xFF)))
     result))
 
 (defun decode-fixed64 (bytes offset)
@@ -98,11 +99,12 @@
 
 ;;; Floating Point Encoding (IEEE 754)
 
+
 (defun pb-encode-float (value)
   "Encode 32-bit float (IEEE 754). Returns 4-byte array."
   ;; Use SBCL's internal float representation
   #+sbcl
-  (let ((bits (sb-kernel:single-float-bits value)))
+  (let ((bits (logand #xFFFFFFFF (sb-kernel:single-float-bits value))))
     (encode-fixed32 bits))
   #-sbcl
   (error "Float encoding not implemented for this Lisp"))
@@ -112,15 +114,25 @@
   (multiple-value-bind (bits new-offset)
       (decode-fixed32 bytes offset)
     #+sbcl
-    (values (sb-kernel:make-single-float bits) new-offset)
+    (let ((signed-bits (if (>= bits #x80000000)
+                          (- bits #x100000000)
+                          bits)))
+      (values (sb-kernel:make-single-float signed-bits) new-offset))
     #-sbcl
     (error "Float decoding not implemented for this Lisp")))
 
 (defun pb-encode-double (value)
   "Encode 64-bit double (IEEE 754). Returns 8-byte array."
   #+sbcl
-  (let ((bits (sb-kernel:double-float-bits value)))
-    (encode-fixed64 bits))
+  (multiple-value-bind (hi lo)
+      (sb-kernel:double-float-bits value)
+    (let ((bits (if lo
+                   ;; Two values returned (hi, lo) - combine them
+                   (logior (ash (logand hi #xFFFFFFFF) 32)
+                          (logand lo #xFFFFFFFF))
+                   ;; Single value returned - use it directly
+                   hi)))
+      (encode-fixed64 bits)))
   #-sbcl
   (error "Double encoding not implemented for this Lisp"))
 
@@ -129,9 +141,13 @@
   (multiple-value-bind (bits new-offset)
       (decode-fixed64 bytes offset)
     #+sbcl
-    (let ((hi (logand (ash bits -32) #xFFFFFFFF))
-          (lo (logand bits #xFFFFFFFF)))
-      (values (sb-kernel:make-double-float hi lo) new-offset))
+    ;; Reinterpret 64-bit integer as double using direct memory access
+    (let ((bits-array (make-array 8 :element-type '(unsigned-byte 8))))
+      (loop for i from 0 to 7
+            do (setf (aref bits-array i) (logand (ash bits (* i -8)) #xFF)))
+      (sb-sys:with-pinned-objects (bits-array)
+        (let ((sap (sb-sys:vector-sap bits-array)))
+          (values (sb-sys:sap-ref-double sap 0) new-offset))))
     #-sbcl
     (error "Double decoding not implemented for this Lisp")))
 
