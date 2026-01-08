@@ -41,7 +41,8 @@
      (:file "errors")
      (:file "metadata")
      (:file "message")
-     (:file "protocol")))
+     (:file "protocol")
+     (:file "protobuf-simple")))
 
    (:module "transport"
     :components

@@ -6,40 +6,114 @@
 (push (truename "../../../") asdf:*central-registry*)
 (asdf:load-system :clgrpc)
 
-(in-package #:cl-user)
+(defpackage #:helloworld-server
+  (:use #:cl))
 
-(defun main ()
-  "Run the HelloWorld server"
+(in-package #:helloworld-server)
+
+;;; Handler for SayHello RPC
+
+(defclass greeter-handler ()
+  ()
+  (:documentation "Handler for helloworld.Greeter service"))
+
+(defmethod clgrpc.server:handle-unary ((handler greeter-handler)
+                                        service-name
+                                        method-name
+                                        request-bytes
+                                        context)
+  "Handle unary RPC for Greeter service.
+
+   Implements:
+     rpc SayHello (HelloRequest) returns (HelloReply)"
+
+  (declare (ignore context))
+
+  (format t "~%[~A] Received RPC: ~A/~A~%"
+          (get-universal-time)
+          service-name
+          method-name)
+
+  (cond
+    ((string= method-name "SayHello")
+     ;; Decode gRPC-framed request
+     (let ((request-protobuf (clgrpc.grpc:decode-grpc-message request-bytes)))
+       (format t "  Request: ~D bytes~%" (length request-protobuf))
+
+       ;; Decode HelloRequest protobuf message
+       (let ((name (clgrpc.grpc:decode-hello-request request-protobuf)))
+         (format t "  HelloRequest { name: ~S }~%" name)
+
+         ;; Build response
+         (let* ((reply-message (format nil "Hello ~A" name))
+                (reply-protobuf (clgrpc.grpc:encode-hello-reply reply-message))
+                (reply-grpc (clgrpc.grpc:encode-grpc-message reply-protobuf)))
+
+           (format t "  HelloReply { message: ~S }~%" reply-message)
+           (format t "  Response: ~D bytes~%~%" (length reply-grpc))
+
+           ;; Return: (values response-bytes status-code status-message response-metadata)
+           (values reply-grpc
+                   clgrpc.grpc:+grpc-status-ok+
+                   nil
+                   nil)))))
+
+    (t
+     ;; Unknown method
+     (format t "  ERROR: Unknown method~%~%")
+     (values nil
+             clgrpc.grpc:+grpc-status-unimplemented+
+             (format nil "Method ~A not implemented" method-name)
+             nil))))
+
+;;; Server Setup
+
+(defun run-server (&key (port 50051))
+  "Run the HelloWorld gRPC server.
+
+   Args:
+     port: Port to listen on (default: 50051)"
+
   (format t "~%Common Lisp gRPC Server~%")
   (format t "========================~%~%")
 
-  ;; For now, this is a placeholder that demonstrates the structure
-  ;; The actual implementation will require:
-  ;; 1. Protobuf message deserialization (using cl-protobufs)
-  ;; 2. Defining a service handler
-  ;; 3. Registering the service
-  ;; 4. Starting the server
+  (let ((server (clgrpc:make-server :port port))
+        (handler (make-instance 'greeter-handler)))
 
-  (format t "Creating server on port 50051...~%")
+    (format t "Registering helloworld.Greeter service...~%")
 
-  (handler-case
-      (let ((server (clgrpc:make-server :port 50051)))
-        (format t "Server created successfully!~%")
-        (format t "~%")
-        (format t "Note: Full implementation requires:~%")
-        (format t "  1. cl-protobufs integration for message serialization~%")
-        (format t "  2. Handler implementation for SayHello method~%")
-        (format t "  3. Service registration~%")
-        (format t "  4. Starting the server (clgrpc:start-server server)~%")
-        (format t "~%This is a structural demo.~%")
+    ;; Register handler for the service
+    (clgrpc.server:register-handler
+     (clgrpc.server:grpc-server-router server)
+     "helloworld.Greeter"
+     "SayHello"
+     handler)
 
-        ;; Would call: (clgrpc:start-server server)
-        ;; Would wait: (sleep most-positive-fixnum)
+    (format t "Service registered!~%~%")
+    (format t "Starting server on port ~D...~%" port)
 
-        (format t "~%Server test complete!~%"))
-    (error (e)
-      (format t "Error: ~A~%" e)
-      (return-from main nil))))
+    ;; Start server
+    (clgrpc:start-server server)
 
-;; Run the server
-(main)
+    (format t "~%Server is listening!~%")
+    (format t "========================~%")
+    (format t "~%Press Ctrl+C to stop~%~%")
+
+    ;; Keep server running
+    (handler-case
+        (loop (sleep 1))
+      (sb-sys:interactive-interrupt ()
+        (format t "~%~%Shutting down...~%")
+        (clgrpc:stop-server server)
+        (format t "Server stopped.~%~%")))))
+
+(defun main ()
+  "Entry point for the server"
+  (let ((port-str (second sb-ext:*posix-argv*)))
+    (if port-str
+        (run-server :port (parse-integer port-str :junk-allowed t))
+        (run-server))))
+
+;; Run if loaded as script
+(when (member "--run" sb-ext:*posix-argv* :test #'string=)
+  (main))

@@ -339,7 +339,13 @@
    #:decode-grpc-response-message
    #:simple-text-message
    #:message-text
-   #:make-simple-text-message))
+   #:make-simple-text-message
+
+   ;; Simple Protobuf (HelloWorld messages)
+   #:encode-hello-request
+   #:decode-hello-request
+   #:encode-hello-reply
+   #:decode-hello-reply))
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")
@@ -363,13 +369,18 @@
   (:export
    ;; Server API
    #:grpc-server
+   #:grpc-server-router
    #:make-server
    #:start-server
    #:stop-server
    #:register-service
 
+   ;; Router
+   #:register-handler
+   #:unregister-handler
+
    ;; Handler interface
-   #:handle-unary-call
+   #:handle-unary
 
    ;; Service definition
    #:define-grpc-service))
