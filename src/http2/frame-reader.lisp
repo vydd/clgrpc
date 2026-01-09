@@ -1,38 +1,50 @@
-;;;; frame-reader.lisp - Reading HTTP/2 frames from streams
+;;;; frame-reader.lisp - Reading HTTP/2 frames from buffered sockets
 
 (in-package #:clgrpc.http2)
 
-(defun read-bytes-from-stream (stream count)
-  "Read exactly count bytes from stream. Returns byte array or signals error."
-  (let ((buffer (make-byte-array count)))
-    (let ((bytes-read (read-sequence buffer stream)))
-      (unless (= bytes-read count)
-        (error "Unexpected end of stream: expected ~D bytes, got ~D"
-               count bytes-read))
-      buffer)))
+(defun read-bytes-from-stream (buffered-socket count)
+  "Read exactly count bytes from buffered socket. Returns byte array or signals error."
+  ;; Use buffered I/O from transport layer
+  (clgrpc.transport:buffered-read-bytes buffered-socket count))
 
-(defun read-frame-from-stream (stream)
-  "Read a single HTTP/2 frame from stream. Returns http2-frame or nil on EOF."
-  ;; Read frame header (9 bytes)
+(defun read-frame-from-stream (buffered-socket)
+  "Read a single HTTP/2 frame from buffered socket. Returns http2-frame or nil on EOF.
+
+   Uses buffered-peek-bytes for efficient frame header reading."
   (handler-case
-      (let ((header (read-bytes-from-stream stream +frame-header-size+)))
-        ;; Decode header
-        (multiple-value-bind (length type flags stream-id)
-            (decode-frame-header header)
+      (progn
+        ;; Peek at frame header (9 bytes) without consuming
+        ;; This is efficient - doesn't require multiple read calls
+        (let ((header (clgrpc.transport:buffered-peek-bytes buffered-socket +frame-header-size+)))
 
-          ;; Read payload
-          (let ((payload (if (zerop length)
-                            (make-byte-array 0)
-                            (read-bytes-from-stream stream length))))
+          ;; Decode header to get payload length
+          (multiple-value-bind (length type flags stream-id)
+              (decode-frame-header header)
 
-            ;; Construct frame
-            (make-http2-frame :length length
-                             :type type
-                             :flags flags
-                             :stream-id stream-id
-                             :payload payload))))
-    (end-of-file ()
-      nil)))
+            ;; Now read the complete frame (header + payload)
+            (let* ((total-size (+ +frame-header-size+ length))
+                   (frame-bytes (clgrpc.transport:buffered-read-bytes buffered-socket total-size)))
+
+              (format *error-output* "RECV: type=~D stream=~D len=~D flags=~D~%"
+                      type stream-id length flags)
+
+              ;; Extract payload (skip 9-byte header)
+              (let ((payload (if (zerop length)
+                                (make-byte-array 0)
+                                (subseq frame-bytes +frame-header-size+))))
+
+                ;; Construct frame
+                (make-http2-frame :length length
+                                 :type type
+                                 :flags flags
+                                 :stream-id stream-id
+                                 :payload payload))))))
+    (error (e)
+      ;; EOF or read error - return nil
+      (when (search "EOF" (format nil "~A" e))
+        (return-from read-frame-from-stream nil))
+      ;; Re-signal other errors
+      (error e))))
 
 (defun read-continuation-frames (stream initial-frame)
   "Read CONTINUATION frames following a HEADERS frame.

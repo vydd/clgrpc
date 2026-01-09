@@ -1,17 +1,29 @@
-;;;; frame-writer.lisp - Writing HTTP/2 frames to streams
+;;;; frame-writer.lisp - Writing HTTP/2 frames to buffered sockets
 
 (in-package #:clgrpc.http2)
 
-(defun write-frame-to-stream (frame stream)
-  "Write HTTP/2 frame to stream"
-  (let ((encoded (encode-frame frame)))
-    (write-sequence encoded stream)
-    (force-output stream)))
+(defun write-frame-to-stream (frame buffered-socket)
+  "Write HTTP/2 frame to buffered socket.
 
-(defun write-frames-to-stream (frames stream)
-  "Write multiple HTTP/2 frames to stream"
+   Uses buffered I/O from transport layer for efficiency."
+  (let ((encoded (encode-frame frame)))
+    (format *error-output* "SEND: type=~D stream=~D len=~D flags=~D bytes=~{~2,'0X ~}~%"
+            (frame-type frame) (frame-stream-id frame) (frame-length frame) (frame-flags frame)
+            (coerce encoded 'list))
+    ;; Write to buffer (may not flush immediately)
+    (clgrpc.transport:buffered-write-bytes buffered-socket encoded)
+    ;; Flush to ensure frame is sent
+    (clgrpc.transport:buffered-flush buffered-socket)))
+
+(defun write-frames-to-stream (frames buffered-socket)
+  "Write multiple HTTP/2 frames to buffered socket.
+
+   Batches writes and flushes once at the end for efficiency."
   (dolist (frame frames)
-    (write-frame-to-stream frame stream)))
+    (let ((encoded (encode-frame frame)))
+      (clgrpc.transport:buffered-write-bytes buffered-socket encoded)))
+  ;; Single flush for all frames
+  (clgrpc.transport:buffered-flush buffered-socket))
 
 (defun split-data-into-frames (stream-id data max-frame-size &key end-stream)
   "Split data into multiple DATA frames respecting max frame size.

@@ -43,11 +43,10 @@
     (when (grpc-server-running server)
       (error "Server is already running"))
 
-    ;; Create listener socket
-    (let ((socket (usocket:socket-listen "0.0.0.0"
-                                         (grpc-server-port server)
-                                         :element-type '(unsigned-byte 8)
-                                         :reuse-address t)))
+    ;; Create TCP listener socket using transport layer
+    (let ((socket (clgrpc.transport:make-tcp-server (grpc-server-port server)
+                                                    :host "0.0.0.0"
+                                                    :reuse-address t)))
       (setf (grpc-server-listener-socket server) socket)
       (setf (grpc-server-running server) t)
 
@@ -94,9 +93,8 @@
    Runs in dedicated thread."
   (handler-case
       (loop while (grpc-server-running server)
-            do (let ((client-socket (usocket:socket-accept
-                                    (grpc-server-listener-socket server)
-                                    :element-type '(unsigned-byte 8))))
+            do (let ((client-socket (clgrpc.transport:accept-connection
+                                    (grpc-server-listener-socket server))))
                  (when client-socket
                    (server-handle-connection server client-socket))))
     (error (e)
@@ -111,22 +109,25 @@
 
    Args:
      server: grpc-server
-     client-socket: Accepted client socket"
-  ;; Create HTTP/2 connection
-  (let ((conn (make-http2-connection
-               :socket (usocket:socket-stream client-socket)
-               :is-client nil
-               :hpack-encoder (make-hpack-context)
-               :hpack-decoder (make-hpack-context))))
+     client-socket: tcp-socket from transport layer"
+  ;; Wrap socket with buffering for efficient HTTP/2 frame I/O
+  (let ((buffered-socket (clgrpc.transport:wrap-socket-with-buffer client-socket)))
 
-    ;; Add to server's connection list
-    (bordeaux-threads:with-lock-held ((grpc-server-lock server))
-      (vector-push-extend conn (grpc-server-connections server)))
+    ;; Create HTTP/2 connection
+    (let ((conn (make-http2-connection
+                 :socket buffered-socket
+                 :is-client nil
+                 :hpack-encoder (make-hpack-context)
+                 :hpack-decoder (make-hpack-context))))
 
-    ;; Spawn connection handler thread
-    (bordeaux-threads:make-thread
-     (lambda () (server-connection-loop server conn))
-     :name "grpc-connection-handler")))
+      ;; Add to server's connection list
+      (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+        (vector-push-extend conn (grpc-server-connections server)))
+
+      ;; Spawn connection handler thread
+      (bordeaux-threads:make-thread
+       (lambda () (server-connection-loop server conn))
+       :name "grpc-connection-handler"))))
 
 (defun server-connection-loop (server connection)
   "Handle frames for a single connection.
@@ -166,12 +167,8 @@
   "Read and validate HTTP/2 client preface.
 
    Preface is 24 bytes: \"PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\""
-  (let ((preface (make-byte-array 24))
-        (socket (http2-connection-socket connection)))
-    (let ((bytes-read (read-sequence preface socket)))
-      (unless (= bytes-read 24)
-        (error "Incomplete client preface"))
-
+  (let ((buffered-socket (http2-connection-socket connection)))
+    (let ((preface (clgrpc.transport:buffered-read-bytes buffered-socket 24)))
       (unless (equalp preface (http2-client-preface-bytes))
         (error "Invalid client preface")))))
 
@@ -194,8 +191,8 @@
      server: grpc-server
      connection: http2-connection
      frame: http2-frame"
-  (let ((frame-type (http2-frame-type frame))
-        (stream-id (http2-frame-stream-id frame)))
+  (let ((frame-type (frame-type frame))
+        (stream-id (frame-stream-id frame)))
 
     (cond
       ((= frame-type +frame-type-headers+)
@@ -225,9 +222,9 @@
      server: grpc-server
      connection: http2-connection
      frame: http2-frame with HEADERS"
-  (let* ((stream-id (http2-frame-stream-id frame))
+  (let* ((stream-id (frame-stream-id frame))
          (decoder-ctx (http2-connection-hpack-decoder connection))
-         (headers (hpack-decode-headers decoder-ctx (http2-frame-payload frame)))
+         (headers (hpack-decode-headers decoder-ctx (frame-payload frame)))
          (path (cdr (assoc ":path" headers :test #'string=))))
 
     ;; Route request to handler
@@ -261,7 +258,7 @@
    Args:
      connection: http2-connection
      frame: http2-frame with SETTINGS"
-  (let ((flags (http2-frame-flags frame)))
+  (let ((flags (frame-flags frame)))
     (if (logtest flags +flag-ack+)
         ;; ACK - nothing to do
         nil
@@ -281,11 +278,11 @@
      connection: http2-connection
      frame: http2-frame with PING"
   (let ((pong-frame (make-http2-frame
-                     :length (http2-frame-length frame)
+                     :length (frame-length frame)
                      :type +frame-type-ping+
                      :flags +flag-ack+
                      :stream-id 0
-                     :payload (http2-frame-payload frame))))
+                     :payload (frame-payload frame))))
     (write-frame-to-stream pong-frame (http2-connection-socket connection))))
 
 ;;; Request Handling

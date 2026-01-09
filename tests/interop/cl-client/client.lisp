@@ -3,6 +3,20 @@
 ;;;; This client calls a gRPC server (Go or CL) with a HelloWorld request.
 
 (require :asdf)
+
+;; Load Quicklisp
+(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+
+;; Load dependencies via Quicklisp
+(ql:quickload :babel :verbose nil :silent t)
+(ql:quickload :bordeaux-threads :verbose nil :silent t)
+(ql:quickload :usocket :verbose nil :silent t)
+(ql:quickload :cl+ssl :verbose nil :silent t)
+(ql:quickload :alexandria :verbose nil :silent t)
+
+;; Load clgrpc
 (push (truename "../../../") asdf:*central-registry*)
 (asdf:load-system :clgrpc)
 
