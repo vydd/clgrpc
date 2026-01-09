@@ -44,7 +44,8 @@
      (:file "message")
      (:file "protocol")
      (:file "protobuf-simple")
-     (:file "protobuf" :depends-on ("protobuf-simple"))))
+     (:file "protobuf" :depends-on ("protobuf-simple"))
+     (:file "helloworld")))
 
    (:module "transport"
     :components

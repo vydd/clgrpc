@@ -104,6 +104,7 @@
    #:parse-settings-frame
    #:apply-settings
    #:make-settings-frame-from-settings
+   #:build-settings-frame-payload
    #:http2-settings-header-table-size
    #:http2-settings-enable-push
    #:http2-settings-max-concurrent-streams
@@ -157,6 +158,7 @@
    #:make-http2-connection
    #:make-client-connection
    #:make-server-connection
+   #:http2-client-preface-bytes
    #:connection-get-stream
    #:connection-create-stream
    #:connection-get-or-create-stream
@@ -176,11 +178,19 @@
    #:connection-close
    #:http2-connection-is-client
    #:http2-connection-streams
+   #:http2-connection-active-calls
    #:http2-connection-next-stream-id
    #:http2-connection-local-settings
    #:http2-connection-remote-settings
    #:http2-connection-hpack-encoder
    #:http2-connection-hpack-decoder
+   #:http2-connection-socket
+   #:http2-connection-closed
+   #:http2-connection-goaway-sent
+   #:http2-connection-goaway-received
+   #:http2-connection-settings-received
+   #:http2-connection-ready-lock
+   #:http2-connection-ready-cv
    #:http2-connection-connection-send-window
    #:http2-connection-connection-recv-window
    #:http2-connection-goaway-sent
@@ -219,23 +229,68 @@
    #:hpack-encode-literal-without-indexing))
 
 (defpackage #:clgrpc.transport
-  (:documentation "Transport layer (TCP/TLS) for gRPC")
+  (:documentation "Transport layer (TCP/TLS/Buffered I/O) for gRPC")
   (:use #:cl #:clgrpc.utils)
   (:export
-   ;; Socket operations
-   #:make-tcp-socket
-   #:close-socket
-   #:socket-stream
+   ;; TCP socket operations
+   #:tcp-socket
+   #:tcp-socket-p
+   #:make-tcp-connection
+   #:make-tcp-server
+   #:accept-connection
+   #:socket-read-byte
+   #:socket-read-bytes
+   #:socket-read-sequence
+   #:socket-write-byte
+   #:socket-write-bytes
+   #:socket-write-sequence
+   #:socket-flush
+   #:socket-close
+   #:socket-open-p
+   #:socket-wait-for-input
+   #:socket-get-peer-info
+   #:socket-set-timeout
+   #:with-tcp-connection
+   #:with-tcp-server
 
-   ;; TLS operations
-   #:tls-wrap-socket
-   #:tls-connect
+   ;; TLS socket operations
+   #:tls-socket
+   #:tls-socket-p
+   #:make-tls-connection
+   #:make-tls-server-context
+   #:accept-tls-connection
+   #:tls-read-byte
+   #:tls-read-bytes
+   #:tls-read-sequence
+   #:tls-write-byte
+   #:tls-write-bytes
+   #:tls-write-sequence
+   #:tls-flush
    #:tls-close
+   #:tls-open-p
+   #:tls-get-alpn-protocol
+   #:tls-get-peer-info
+   #:tls-get-peer-certificate
+   #:with-tls-connection
+   #:alpn-supported-p
 
-   ;; Buffer operations
-   #:make-buffer
-   #:buffer-read
-   #:buffer-write))
+   ;; Buffered socket operations
+   #:buffered-socket
+   #:buffered-socket-p
+   #:wrap-socket-with-buffer
+   #:buffered-read-byte
+   #:buffered-read-bytes
+   #:buffered-peek-bytes
+   #:buffered-skip-bytes
+   #:buffered-write-byte
+   #:buffered-write-bytes
+   #:buffered-flush
+   #:buffered-close
+   #:buffered-open-p
+   #:buffered-get-underlying-socket
+   #:with-buffered-socket
+   #:buffered-read-available
+   #:buffered-write-available))
 
 (defpackage #:clgrpc.grpc
   (:documentation "gRPC protocol implementation")

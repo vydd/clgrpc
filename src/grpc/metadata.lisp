@@ -172,11 +172,13 @@
                   (cons ":path" (format nil "/~A/~A" service method))
                   (cons ":authority" (or authority "localhost"))
                   (cons "content-type" +grpc-content-type+)
-                  (cons "te" +grpc-te+))))
+                  (cons "te" +grpc-te+)
+                  (cons "user-agent" "clgrpc/0.1.0")
+                  (cons "grpc-accept-encoding" "identity"))))
 
-    ;; Add timeout if specified
+    ;; Add timeout if specified (must come AFTER pseudo-headers)
     (when timeout
-      (push (cons "grpc-timeout" (encode-grpc-timeout timeout)) headers))
+      (setf headers (append headers (list (cons "grpc-timeout" (encode-grpc-timeout timeout))))))
 
     ;; Add custom metadata
     (when metadata

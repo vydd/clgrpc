@@ -12,6 +12,7 @@
   (stream-id nil :type (or null fixnum))
   (service "" :type string)
   (method "" :type string)
+  (authority "" :type string)           ; :authority pseudo-header (host:port)
   (timeout nil :type (or null fixnum))  ; Milliseconds
   (metadata nil :type list)             ; List of (name . value) pairs
   (request-sent nil :type boolean)
@@ -40,10 +41,27 @@
          (stream-id (http2-connection-next-stream-id conn))
          (hpack-ctx (http2-connection-hpack-encoder conn)))
 
+    ;; Wait for connection to be ready (server SETTINGS received)
+    (bt:with-lock-held ((http2-connection-ready-lock conn))
+      (loop until (http2-connection-settings-received conn)
+            do (bt:condition-wait (http2-connection-ready-cv conn)
+                                  (http2-connection-ready-lock conn)
+                                  :timeout 5)))  ; 5 second timeout
+
+    ;; Store stream ID in call and increment for next call
+    (setf (grpc-call-stream-id call) stream-id)
+    (incf (http2-connection-next-stream-id conn) 2)  ; Clients use odd stream IDs
+
+    ;; Register call in connection for response handling BEFORE sending request
+    ;; This prevents race condition where response arrives before registration
+    (format *error-output* "REGISTER CALL: stream=~D~%" stream-id)
+    (setf (gethash stream-id (http2-connection-active-calls conn)) call)
+
     ;; Build request headers
     (let ((headers (encode-grpc-request-headers
                     (grpc-call-service call)
                     (grpc-call-method call)
+                    :authority (grpc-call-authority call)
                     :timeout (grpc-call-timeout call)
                     :metadata (grpc-call-metadata call))))
 
@@ -72,7 +90,6 @@
         (write-frame-to-stream data-frame (http2-connection-socket conn))))
 
     ;; Update call state
-    (setf (grpc-call-stream-id call) stream-id)
     (setf (grpc-call-request-sent call) t)
 
     stream-id))
@@ -116,7 +133,7 @@
     ;; Check gRPC status
     (let ((status (grpc-call-status call)))
       (unless (and status (= status +grpc-status-ok+))
-        (signal-grpc-error-from-code
+        (signal-grpc-error
          (or status +grpc-status-unknown+)
          (or (grpc-call-status-message call) "Unknown error"))))
 
@@ -134,10 +151,13 @@
      call: grpc-call structure
      headers: Decoded headers (list of (name . value) pairs)
      end-stream: Boolean, true if END_STREAM flag set"
+  (format *error-output* "HANDLE HEADERS: end-stream=~A, has-response-headers=~A~%"
+          end-stream (not (null (grpc-call-response-headers call))))
   (bordeaux-threads:with-lock-held ((grpc-call-lock call))
     (if (grpc-call-response-headers call)
         ;; This is trailers (second HEADERS frame)
         (progn
+          (format *error-output* "  -> Processing as TRAILERS~%")
           (setf (grpc-call-response-trailers call) headers)
 
           ;; Extract grpc-status and grpc-message from trailers
@@ -149,6 +169,7 @@
             (when message-header
               (setf (grpc-call-status-message call) (cdr message-header))))
 
+          (format *error-output* "  -> Marking call COMPLETED, status=~A~%" (grpc-call-status call))
           ;; Call is complete
           (setf (grpc-call-completed call) t)
           (bordeaux-threads:condition-notify (grpc-call-condition call)))
@@ -221,13 +242,14 @@
 
 ;;; High-Level Call API
 
-(defun create-grpc-call (connection service method &key timeout metadata)
+(defun create-grpc-call (connection service method &key authority timeout metadata)
   "Create a new gRPC call.
 
    Args:
      connection: http2-connection
      service: Service name (e.g., \"helloworld.Greeter\")
      method: Method name (e.g., \"SayHello\")
+     authority: Authority/target (e.g., \"localhost:50051\")
      timeout: Timeout in milliseconds (optional)
      metadata: List of (name . value) pairs for custom metadata (optional)
 
@@ -237,6 +259,7 @@
    :connection connection
    :service service
    :method method
+   :authority authority
    :timeout timeout
    :metadata metadata))
 

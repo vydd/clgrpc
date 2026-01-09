@@ -5,7 +5,9 @@
 ;;; HTTP/2 Connection Preface (RFC 9113 Section 3.4)
 
 (defparameter +http2-client-preface+
-  "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+  (format nil "PRI * HTTP/2.0~C~C~C~CSM~C~C~C~C"
+          #\Return #\Linefeed #\Return #\Linefeed
+          #\Return #\Linefeed #\Return #\Linefeed)
   "HTTP/2 client connection preface")
 
 (defun http2-client-preface-bytes ()
@@ -19,6 +21,7 @@
   (socket nil)  ; Underlying socket/stream
   (is-client t :type boolean)  ; Client or server
   (streams (make-hash-table :test 'eql) :type hash-table)  ; Stream ID -> http2-stream
+  (active-calls (make-hash-table :test 'eql) :type hash-table)  ; Stream ID -> grpc-call (for client)
   (next-stream-id 1 :type (unsigned-byte 31))  ; Next stream ID to use
   (local-settings (make-default-settings))
   (remote-settings (make-default-settings))
@@ -30,7 +33,10 @@
   (last-stream-id 0 :type (unsigned-byte 31))  ; Last stream ID received
   (goaway-sent nil :type boolean)
   (goaway-received nil :type boolean)
-  (closed nil :type boolean))
+  (closed nil :type boolean)
+  (settings-received nil :type boolean)  ; Server SETTINGS received (connection ready)
+  (ready-lock (bt:make-lock "connection-ready-lock"))
+  (ready-cv (bt:make-condition-variable :name "connection-ready")))
 
 (defun make-client-connection (socket)
   "Create HTTP/2 client connection"
@@ -195,4 +201,4 @@
   "Close connection"
   (setf (http2-connection-closed connection) t)
   (when (http2-connection-socket connection)
-    (close (http2-connection-socket connection))))
+    (clgrpc.transport:buffered-close (http2-connection-socket connection))))

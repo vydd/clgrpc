@@ -40,7 +40,7 @@
   (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
     ;; Try to reuse existing connection
     (let ((existing (find-if (lambda (conn)
-                              (and (http2-connection-open-p conn)
+                              (and (not (connection-is-closed-p conn))
                                    (not (http2-connection-goaway-received conn))))
                             (connection-pool-connections pool))))
       (when existing
@@ -76,7 +76,7 @@
      pool: connection-pool structure"
   (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
     (loop for conn across (connection-pool-connections pool)
-          do (when (http2-connection-open-p conn)
+          do (when (not (connection-is-closed-p conn))
                (connection-close conn)))
     (setf (fill-pointer (connection-pool-connections pool)) 0)))
 
@@ -103,41 +103,48 @@
                   (parse-integer (subseq target (1+ colon-pos)) :junk-allowed t)
                   (if secure 443 80))))
 
-    ;; Create TCP socket
-    (let ((socket (usocket:socket-connect host port
-                                          :element-type '(unsigned-byte 8))))
+    ;; Create socket (TCP or TLS with ALPN)
+    (let ((socket (if secure
+                      ;; TLS with ALPN for HTTP/2
+                      (clgrpc.transport:make-tls-connection host port
+                                                           :timeout 30
+                                                           :alpn-protocols '("h2")
+                                                           :verify t)
+                      ;; Plain TCP
+                      (clgrpc.transport:make-tcp-connection host port
+                                                           :timeout 30))))
 
-      ;; Upgrade to TLS if secure
-      (when secure
-        (let ((tls-stream (tls-wrap-socket socket host)))
-          (setf socket tls-stream)))
+      ;; Wrap with buffering for efficient HTTP/2 frame I/O
+      (let ((buffered-socket (clgrpc.transport:wrap-socket-with-buffer socket)))
 
-      ;; Create HTTP/2 connection
-      (let ((conn (make-http2-connection
-                   :socket socket
-                   :is-client t
-                   :hpack-encoder (make-hpack-context)
-                   :hpack-decoder (make-hpack-context))))
+        ;; Create HTTP/2 connection
+        (let ((conn (make-http2-connection
+                     :socket buffered-socket
+                     :is-client t
+                     :hpack-encoder (make-hpack-context)
+                     :hpack-decoder (make-hpack-context))))
 
-        ;; Send client connection preface
-        (http2-send-client-preface conn)
+          ;; Send client connection preface FIRST
+          (http2-send-client-preface conn)
 
-        ;; Send initial SETTINGS frame
-        (http2-send-settings conn nil)  ; Empty settings for now
+          ;; Send initial SETTINGS frame
+          (http2-send-settings conn nil)  ; Empty settings for now
 
-        ;; Start frame reader thread
-        (start-connection-frame-reader conn)
+          ;; NOW start frame reader thread to receive server SETTINGS
+          (start-connection-frame-reader conn)
 
-        conn))))
+          conn)))))
 
 (defun http2-send-client-preface (connection)
   "Send HTTP/2 client connection preface.
 
    Preface is: \"PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\" (24 bytes)"
   (let ((preface (http2-client-preface-bytes))
-        (socket (http2-connection-socket connection)))
-    (write-sequence preface socket)
-    (force-output socket)))
+        (buffered-socket (http2-connection-socket connection)))
+    (format *error-output* "SEND PREFACE: ~D bytes: ~{~2,'0X ~}~%"
+            (length preface) (coerce preface 'list))
+    (clgrpc.transport:buffered-write-bytes buffered-socket preface)
+    (clgrpc.transport:buffered-flush buffered-socket)))
 
 (defun http2-send-settings (connection settings)
   "Send SETTINGS frame.
@@ -146,7 +153,7 @@
      connection: http2-connection
      settings: List of (parameter . value) pairs (nil for empty)"
   (let ((payload (if settings
-                    (encode-settings-frame settings)
+                    (build-settings-frame-payload settings)
                     (make-byte-array 0))))
     (let ((frame (make-http2-frame
                   :length (length payload)
@@ -162,11 +169,14 @@
    Thread reads frames in loop and dispatches to appropriate handlers."
   (bordeaux-threads:make-thread
    (lambda ()
+     (format *error-output* "Frame reader thread started~%")
      (handler-case
          (loop
+           (format *error-output* "Frame reader: waiting for frame...~%")
            (let ((frame (read-frame-from-stream (http2-connection-socket connection))))
              (unless frame
                ;; EOF - connection closed
+               (format *error-output* "Frame reader: EOF~%")
                (return))
 
              ;; Dispatch frame to handler
@@ -185,51 +195,66 @@
      frame: http2-frame"
   ;; For now, simplified: find call by stream-id
   ;; TODO: Implement proper call registry in connection
-  (let ((stream-id (http2-frame-stream-id frame))
-        (frame-type (http2-frame-type frame)))
+  (let ((stream-id (frame-stream-id frame))
+        (frame-type (frame-type frame)))
 
     (cond
       ((= frame-type +frame-type-headers+)
        ;; Decode headers
        (let* ((decoder-ctx (http2-connection-hpack-decoder connection))
-              (headers (hpack-decode-headers decoder-ctx (http2-frame-payload frame)))
-              (end-stream (logtest (http2-frame-flags frame) +flag-end-stream+))
-              (call (find-call-by-stream-id connection stream-id)))
-         (when call
-           (call-handle-headers call headers end-stream))))
+              (headers (hpack-decode-headers decoder-ctx (frame-payload frame)))
+              (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
+         (format *error-output* "DISPATCH HEADERS: stream=~D, calling find-call-by-stream-id...~%" stream-id)
+         (force-output *error-output*)
+         (let ((call (find-call-by-stream-id connection stream-id)))
+           (format *error-output* "DISPATCH HEADERS: stream=~D call=~A~%" stream-id (not (null call)))
+           (if call
+               (call-handle-headers call headers end-stream)
+               (format *error-output* "  WARNING: No call found for stream ~D~%" stream-id)))))
 
       ((= frame-type +frame-type-data+)
-       (let ((end-stream (logtest (http2-frame-flags frame) +flag-end-stream+))
+       (let ((end-stream (logtest (frame-flags frame) +flag-end-stream+))
              (call (find-call-by-stream-id connection stream-id)))
          (when call
-           (call-handle-data call (http2-frame-payload frame) end-stream))))
+           (call-handle-data call (frame-payload frame) end-stream))))
 
       ((= frame-type +frame-type-rst-stream+)
-       (let ((error-code (decode-uint32-be (http2-frame-payload frame) 0))
+       (let ((error-code (decode-uint32-be (frame-payload frame) 0))
              (call (find-call-by-stream-id connection stream-id)))
+         (format *error-output* "RST_STREAM on stream ~D: error code=~D~%" stream-id error-code)
          (when call
            (call-handle-rst-stream call error-code))))
 
       ((= frame-type +frame-type-settings+)
        ;; Handle SETTINGS (ACK or update)
-       (when (zerop (logand (http2-frame-flags frame) +flag-ack+))
-         ;; Not an ACK - send ACK back
+       (when (zerop (logand (frame-flags frame) +flag-ack+))
+         ;; Not an ACK - server sent SETTINGS, send ACK back
          (let ((ack-frame (make-http2-frame
                            :length 0
                            :type +frame-type-settings+
                            :flags +flag-ack+
                            :stream-id 0
                            :payload (make-byte-array 0))))
-           (write-frame-to-stream ack-frame (http2-connection-socket connection)))))
+           (write-frame-to-stream ack-frame (http2-connection-socket connection)))
+
+         ;; Mark connection as ready (server SETTINGS received)
+         (bt:with-lock-held ((http2-connection-ready-lock connection))
+           (setf (http2-connection-settings-received connection) t)
+           (bt:condition-notify (http2-connection-ready-cv connection)))))
 
       ((= frame-type +frame-type-goaway+)
        ;; Server is shutting down connection
        (setf (http2-connection-goaway-received connection) t)))))
 
 (defun find-call-by-stream-id (connection stream-id)
-  "Find active call by stream ID.
-
-   TODO: Implement proper call registry.
-   For now, return nil (calls will be tracked in higher layer)."
-  (declare (ignore connection stream-id))
-  nil)
+  "Find active call by stream ID."
+  (force-output *error-output*)  ; Flush before logging
+  (format *error-output* "FIND-CALL ENTRY: stream=~D~%" stream-id)
+  (force-output *error-output*)
+  (let ((ht (http2-connection-active-calls connection)))
+    (format *error-output* "FIND-CALL: hash-table=~A count=~D~%" ht (hash-table-count ht))
+    (force-output *error-output*)
+    (let ((call (gethash stream-id ht)))
+      (format *error-output* "FIND-CALL RESULT: stream=~D found=~A~%" stream-id (not (null call)))
+      (force-output *error-output*)
+      call)))

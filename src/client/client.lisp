@@ -85,14 +85,9 @@
                  :connection connection
                  :service service
                  :method method
+                 :authority (grpc-channel-target channel)
                  :timeout timeout
                  :metadata metadata)))
-
-      ;; Register call in channel
-      (bordeaux-threads:with-lock-held ((grpc-channel-calls-lock channel))
-        ;; We'll get stream ID after sending
-        ;; For now, store in a temporary list
-        )
 
       (unwind-protect
            (progn
@@ -106,11 +101,10 @@
                  (declare (ignore compressed total-read))
                  message-bytes)))
 
-        ;; Cleanup: unregister call
-        (bordeaux-threads:with-lock-held ((grpc-channel-calls-lock channel))
-          (when (grpc-call-stream-id call)
-            (remhash (grpc-call-stream-id call)
-                    (grpc-channel-active-calls channel))))
+        ;; Cleanup: unregister call from connection
+        (when (grpc-call-stream-id call)
+          (remhash (grpc-call-stream-id call)
+                  (http2-connection-active-calls connection)))
 
         ;; Return connection to pool
         (pool-return-connection (grpc-channel-pool channel) connection)))))
@@ -149,13 +143,4 @@
     (gethash stream-id (grpc-channel-active-calls channel))))
 
 ;;; Helper: Connect call registry to connection pool
-
-(defun find-call-by-stream-id (connection stream-id)
-  "Find active call by stream ID (used by frame dispatcher).
-
-   This version searches all channels - not ideal but works for now.
-   TODO: Store channel reference in connection."
-  (declare (ignore connection stream-id))
-  ;; For now, return nil - calls handle their own responses
-  ;; via blocking wait in call-receive-response
-  nil)
+;;; Note: find-call-by-stream-id is defined in connection-pool.lisp
