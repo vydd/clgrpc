@@ -1,0 +1,52 @@
+# Compiled Lisp files
+*.fasl
+*.fas
+*.lib
+*.mem
+*.x86f
+*.lx64fsl
+*.lx32fsl
+
+# ASDF cache
+.fasls/
+fasl/
+
+# Editor files
+*~
+*.swp
+*.swo
+.#*
+\#*\#
+*.bak
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+bin/
+build/
+*.o
+*.so
+*.dylib
+*.dll
+
+# Generated files
+*-generated.lisp
+*.pb.go
+*_pb2.py
+*.pb.cc
+*.pb.h
+
+# Go
+go.work
+go.work.sum
+
+# Test artifacts
+*.log
+*.out
