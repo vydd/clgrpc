@@ -409,7 +409,63 @@
 
    ;; Protobuf Code Generation
    #:compile-proto-file
-   #:generate-code-from-proto))
+   #:generate-code-from-proto
+
+   ;; CLOS-based Protobuf API
+   #:proto-metaclass
+   #:proto-message
+   #:proto-serialize
+   #:proto-deserialize
+   #:proto-serialize-grpc
+   #:proto-deserialize-grpc
+
+   ;; Low-level Protobuf Wire Format
+   ;; Wire types
+   #:+wire-type-varint+
+   #:+wire-type-i64+
+   #:+wire-type-length-delimited+
+   #:+wire-type-i32+
+
+   ;; Encoding functions
+   #:encode-varint
+   #:encode-int32-field
+   #:encode-int64-field
+   #:encode-uint32-field
+   #:encode-uint64-field
+   #:encode-sint32-field
+   #:encode-sint64-field
+   #:encode-bool-field
+   #:encode-fixed32-field
+   #:encode-fixed64-field
+   #:encode-sfixed32-field
+   #:encode-sfixed64-field
+   #:encode-float-field
+   #:encode-double-field
+   #:encode-string-field
+   #:encode-bytes-field
+   #:encode-message-field
+   #:encode-message
+
+   ;; Decoding functions
+   #:decode-field-tag
+   #:decode-varint
+   #:decode-int32
+   #:decode-int64
+   #:decode-uint32
+   #:decode-uint64
+   #:decode-sint32
+   #:decode-sint64
+   #:decode-bool
+   #:decode-fixed32
+   #:decode-fixed64
+   #:decode-sfixed32
+   #:decode-sfixed64
+   #:proto-decode-float
+   #:proto-decode-double
+   #:decode-string-field
+   #:decode-bytes-field
+   #:decode-length-delimited
+   #:skip-field))
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")

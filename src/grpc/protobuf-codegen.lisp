@@ -19,7 +19,7 @@
   number
   repeated)
 
-(defstruct proto-message
+(defstruct proto-message-definition
   name
   fields)
 
@@ -122,7 +122,7 @@
       :repeated repeated)
      tokens)))
 
-(defun parse-proto-message (tokens)
+(defun parse-proto-message-definition (tokens)
   "Parse a message definition. Returns (message . remaining-tokens)."
   (let ((message-name nil)
         (fields nil))
@@ -150,7 +150,7 @@
       (error "Expected '}' at end of message"))
 
     (values
-     (make-proto-message
+     (make-proto-message-definition
       :name message-name
       :fields (nreverse fields))
      tokens)))
@@ -177,7 +177,7 @@
     (loop while tokens
           do (when (string= (first tokens) "message")
                (multiple-value-bind (message remaining)
-                   (parse-proto-message tokens)
+                   (parse-proto-message-definition tokens)
                  (push message messages)
                  (setf tokens remaining)))
              (when (and tokens (not (string= (first tokens) "message")))
@@ -242,8 +242,8 @@
 (defun generate-encoder (message)
   "Generate Lisp encoder function for a message."
   (with-output-to-string (out)
-    (let* ((msg-name (proto-message-name message))
-           (fields (proto-message-fields message))
+    (let* ((msg-name (proto-message-definition-name message))
+           (fields (proto-message-definition-fields message))
            (function-name (format nil "encode-~A" (string-downcase msg-name)))
            (param-names (mapcar (lambda (f)
                                  (intern (string-upcase (proto-field-name f))))
@@ -289,8 +289,8 @@
 (defun generate-decoder (message)
   "Generate Lisp decoder function for a message."
   (with-output-to-string (out)
-    (let* ((msg-name (proto-message-name message))
-           (fields (proto-message-fields message))
+    (let* ((msg-name (proto-message-definition-name message))
+           (fields (proto-message-definition-fields message))
            (function-name (format nil "decode-~A" (string-downcase msg-name))))
 
       ;; Function definition
@@ -369,7 +369,7 @@
     (with-output-to-string (out)
       (format out ";;;; Auto-generated from .proto file~%~%")
       (loop for message in messages
-            do (format out "~%;;; ~A message~%~%" (proto-message-name message))
+            do (format out "~%;;; ~A message~%~%" (proto-message-definition-name message))
                (format out "~A~%" (generate-encoder message))
                (format out "~A~%" (generate-decoder message))))))
 

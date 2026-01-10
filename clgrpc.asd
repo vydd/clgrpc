@@ -13,6 +13,7 @@
                #:trivial-gray-streams
                #:fast-io
                #:babel
+               #:closer-mop  ; For protobuf CLOS metaclass
                ) ;; ieee-floats not needed - we implement float encoding ourselves
   :pathname "src"
   :serial t
@@ -44,6 +45,7 @@
      (:file "message")
      (:file "protocol")
      (:file "protobuf-simple")
+     (:file "proto-clos" :depends-on ("protobuf-simple"))
      (:file "protobuf" :depends-on ("protobuf-simple"))
      (:file "protobuf-codegen" :depends-on ("protobuf-simple"))
      (:file "reflection" :depends-on ("protobuf-simple"))

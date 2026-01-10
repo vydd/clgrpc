@@ -210,10 +210,13 @@
                (encode-varint (logand value #xFFFFFFFF))))
 
 (defun encode-int64-field (field-number value)
-  "Encode int64 field (varint)."
-  (concatenate '(vector (unsigned-byte 8))
-               (encode-field-tag field-number +wire-type-varint+)
-               (encode-varint value)))
+  "Encode int64 field (varint). Negative values are treated as large unsigned values."
+  (let ((unsigned-value (if (< value 0)
+                           (+ value #x10000000000000000)  ; Convert to unsigned 64-bit
+                           value)))
+    (concatenate '(vector (unsigned-byte 8))
+                 (encode-field-tag field-number +wire-type-varint+)
+                 (encode-varint unsigned-value))))
 
 (defun encode-uint32-field (field-number value)
   "Encode uint32 field (varint)."
@@ -351,3 +354,85 @@
                   ;; Skip unknown field
                   (error "Unknown field ~D with wire type ~D" field-number wire-type)))))
     message))
+
+;;; Decode Functions (low-level API for proto-clos and advanced users)
+
+(defun decode-int32 (bytes offset)
+  "Decode int32 value (varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    ;; Convert to signed 32-bit
+    (let ((val32 (logand value #xFFFFFFFF)))
+      (values (if (> val32 #x7FFFFFFF)
+                  (- val32 #x100000000)
+                  val32)
+              new-offset))))
+
+(defun decode-int64 (bytes offset)
+  "Decode int64 value (varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    ;; Convert from unsigned 64-bit to signed 64-bit
+    (values (if (> value #x7FFFFFFFFFFFFFFF)
+                (- value #x10000000000000000)
+                value)
+            new-offset)))
+
+(defun decode-uint32 (bytes offset)
+  "Decode uint32 value (varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    (values (logand value #xFFFFFFFF) new-offset)))
+
+(defun decode-uint64 (bytes offset)
+  "Decode uint64 value (varint). Returns (values value new-offset)."
+  (decode-varint bytes offset))
+
+(defun decode-sint32 (bytes offset)
+  "Decode sint32 value (zigzag-encoded varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    (values (decode-zigzag-32 value) new-offset)))
+
+(defun decode-sint64 (bytes offset)
+  "Decode sint64 value (zigzag-encoded varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    (values (decode-zigzag-64 value) new-offset)))
+
+(defun decode-bool (bytes offset)
+  "Decode bool value (varint). Returns (values value new-offset)."
+  (multiple-value-bind (value new-offset)
+      (decode-varint bytes offset)
+    (values (not (zerop value)) new-offset)))
+
+(defun decode-sfixed32 (bytes offset)
+  "Decode sfixed32 value (fixed 32-bit). Returns (values value new-offset)."
+  (let ((val (decode-fixed32 bytes offset)))
+    (values (if (> val #x7FFFFFFF)
+                (- val #x100000000)
+                val)
+            (+ offset 4))))
+
+(defun decode-sfixed64 (bytes offset)
+  "Decode sfixed64 value (fixed 64-bit). Returns (values value new-offset)."
+  (let ((val (decode-fixed64 bytes offset)))
+    (values (if (> val #x7FFFFFFFFFFFFFFF)
+                (- val #x10000000000000000)
+                val)
+            (+ offset 8))))
+
+(defun proto-decode-float (bytes offset)
+  "Decode float value (32-bit IEEE 754). Returns (values value new-offset)."
+  (pb-decode-float bytes offset))
+
+(defun proto-decode-double (bytes offset)
+  "Decode double value (64-bit IEEE 754). Returns (values value new-offset)."
+  (pb-decode-double bytes offset))
+
+(defun decode-length-delimited (bytes offset)
+  "Decode length-delimited value (bytes). Returns (values bytes new-offset)."
+  (multiple-value-bind (length new-offset)
+      (decode-varint bytes offset)
+    (let ((value (subseq bytes new-offset (+ new-offset length))))
+      (values value (+ new-offset length)))))
