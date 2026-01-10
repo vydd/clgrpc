@@ -538,6 +538,8 @@
    #:handle-client-streaming
    #:handle-server-streaming
    #:handle-bidirectional-streaming
+   #:handler-context
+   #:get-stream
 
    ;; Server streaming operations
    #:grpc-server-stream

@@ -241,67 +241,47 @@
                                      request-bytes stream context)
   (declare (ignore service-name method-name))
 
+  ;; Add stream to context
+  (setf (handler-context-grpc-stream context) stream)
+
   ;; Deserialize request
   (let* ((request (clgrpc.grpc:proto-deserialize (handler-request-type handler) request-bytes))
          (service (handler-service handler))
          (lisp-method (handler-method-name handler)))
 
-    ;; Call the user's method - should return a list/sequence of responses
-    (let ((responses (funcall lisp-method service request context)))
-      ;; Send each response
-      (dolist (response responses)
-        (server-stream-send stream (clgrpc.grpc:proto-serialize response)))
-
-      ;; Return success
-      (values clgrpc.grpc:+grpc-status-ok+ nil nil))))
+    ;; Call the user's method - it will use (get-stream context) to access stream
+    (funcall lisp-method service request context)))
 
 (defmethod handle-client-streaming ((handler clos-method-handler)
                                      service-name method-name
                                      stream context)
   (declare (ignore service-name method-name))
 
+  ;; Add stream to context
+  (setf (handler-context-grpc-stream context) stream)
+
   (let* ((service (handler-service handler))
          (lisp-method (handler-method-name handler))
-         (request-type (handler-request-type handler))
-         (requests nil))
+         (request-type (handler-request-type handler)))
 
-    ;; Receive all requests
-    (loop for msg-bytes = (server-stream-recv stream)
-          while msg-bytes
-          do (push (clgrpc.grpc:proto-deserialize request-type msg-bytes) requests))
-
-    ;; Call user's method with list of requests
-    (let ((response (funcall lisp-method service (nreverse requests) context)))
-      ;; Serialize response
-      (values (clgrpc.grpc:proto-serialize response)
-              clgrpc.grpc:+grpc-status-ok+
-              nil
-              nil))))
+    ;; Create a dummy request instance (method will use stream from context instead)
+    (let ((dummy-request (make-instance request-type)))
+      ;; Call user's method - it will use (get-stream context) to receive messages
+      (funcall lisp-method service dummy-request context))))
 
 (defmethod handle-bidirectional-streaming ((handler clos-method-handler)
                                             service-name method-name
                                             stream context)
   (declare (ignore service-name method-name))
 
+  ;; Add stream to context
+  (setf (handler-context-grpc-stream context) stream)
+
   (let* ((service (handler-service handler))
          (lisp-method (handler-method-name handler))
          (request-type (handler-request-type handler)))
 
-    ;; For bidirectional streaming, we'll collect requests and pass them to the method
-    ;; The method should return a list of responses, or use a more sophisticated protocol
-    ;; TODO: This is a simplified implementation - may need refinement
-
-    (let ((requests nil))
-      ;; Receive all requests
-      (loop for msg-bytes = (server-stream-recv stream :timeout-ms 100)
-            while msg-bytes
-            do (push (clgrpc.grpc:proto-deserialize request-type msg-bytes) requests))
-
-      ;; Call user's method
-      (let ((responses (funcall lisp-method service (nreverse requests) context)))
-        ;; Send responses
-        (dolist (response responses)
-          (server-stream-send stream (clgrpc.grpc:proto-serialize response)))
-
-        ;; Return success
-        (values clgrpc.grpc:+grpc-status-ok+ nil nil)))))
+    ;; Create a dummy request instance (method will use stream from context instead)
+    (let ((dummy-request (make-instance request-type)))
+      ;; Call user's method - it will use (get-stream context) for send/recv
+      (funcall lisp-method service dummy-request context))))

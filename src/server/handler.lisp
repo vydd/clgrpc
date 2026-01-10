@@ -12,7 +12,14 @@
   (connection nil)
   (metadata nil :type list)        ; Request metadata (headers)
   (deadline nil :type (or null fixnum))  ; Request deadline (internal time)
-  (cancelled nil :type boolean))
+  (cancelled nil :type boolean)
+  (grpc-stream nil))               ; grpc-server-stream for streaming RPCs
+
+(defun get-stream (context)
+  "Get the gRPC stream from a handler context.
+
+   Returns the grpc-server-stream for streaming RPCs, or nil for unary RPCs."
+  (handler-context-grpc-stream context))
 
 ;;; Unary Handler Protocol
 
