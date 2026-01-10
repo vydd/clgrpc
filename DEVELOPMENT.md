@@ -529,7 +529,76 @@ clgrpc/
     (close-channel channel)))
 ```
 
-### High-Level Server API
+### CLOS Service API (Recommended)
+
+The CLOS API provides a clean, type-safe way to define gRPC services using Common Lisp's object system:
+
+**Defining Services:**
+
+```lisp
+(use-package :clgrpc.grpc)
+(use-package :clgrpc.server)
+
+;; Define a service class
+(defclass greeter-service (grpc-service)
+  ()
+  (:metaclass grpc-service-metaclass)
+  (:service-name "helloworld.Greeter")
+  (:package "helloworld"))
+
+;; Define unary method - automatic serialization!
+(defgrpc-method say-hello ((service greeter-service)
+                           (request hello-request)
+                           context)
+  ;; :method-name defaults to "SayHello" (auto CamelCase)
+  ;; :rpc-type defaults to :unary
+  (declare (ignore service context))
+  (let ((name (hello-request-name request)))  ; Already deserialized!
+    (make-hello-reply :message (format nil "Hello ~A!" name))))  ; Auto-serialized!
+
+;; Define server streaming method
+(defgrpc-method list-features ((service route-guide-service)
+                               (request rectangle)
+                               context)
+  (:rpc-type :server-streaming)
+  (let ((stream (get-stream context)))
+    (dolist (feature *features*)
+      (when (in-range? feature request)
+        (server-stream-send stream (proto-serialize feature))))
+    (values +grpc-status-ok+ nil nil)))
+
+;; Define client streaming method
+(defgrpc-method record-route ((service route-guide-service)
+                              (request point)  ; Unused - streaming
+                              context)
+  (:rpc-type :client-streaming)
+  (:response-type route-summary)
+  (let ((stream (get-stream context))
+        (points nil))
+    (loop for msg-bytes = (server-stream-recv stream)
+          while msg-bytes
+          do (push (proto-deserialize 'point msg-bytes) points))
+    (values (proto-serialize (make-route-summary :count (length points)))
+            +grpc-status-ok+ nil nil)))
+
+;; Register entire service (all methods automatically!)
+(let ((server (make-server :port 50051)))
+  (register-service (grpc-server-router server)
+                    (make-instance 'greeter-service))
+  (start-server server))
+```
+
+**Benefits:**
+- ✅ No manual string matching
+- ✅ Type-safe generic function dispatch
+- ✅ Automatic request deserialization
+- ✅ Automatic response serialization (unary)
+- ✅ Smart defaults (kebab-case → CamelCase)
+- ✅ Single registration call per service
+
+### Low-Level Handler API (Advanced)
+
+For fine-grained control, use the low-level handler API:
 
 ```lisp
 (use-package :clgrpc.server)

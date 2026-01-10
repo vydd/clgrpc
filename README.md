@@ -19,8 +19,10 @@ Unlike other implementations, clgrpc has zero gRPC-specific external dependencie
 ## Features
 
 - ✅ **Complete gRPC Implementation**: All four RPC patterns supported
+- ✅ **CLOS-based Service API**: Type-safe, automatic serialization, clean syntax matching Go/Python gRPC
+- ✅ **CLOS Protocol Buffers**: Proto3 messages as CLOS objects with metaclass
 - ✅ **Full HTTP/2**: HPACK compression, Huffman encoding, stream multiplexing, flow control
-- ✅ **Custom Protocol Buffers**: Proto3 implementation with parser and code generator (~640 lines)
+- ✅ **Code Generation**: .proto file parser and CLOS code generator (~640 lines)
 - ✅ **Secure Communication**: TLS with ALPN negotiation ("h2")
 - ✅ **Interoperability**: Fully compatible with official gRPC (verified with Go implementation)
 - ✅ **High Performance**: Buffered I/O (8KB buffers), efficient encoding/decoding
@@ -58,50 +60,62 @@ Expected output: `390/390 tests passing (100%)`
 
 ### Hello World Example
 
-**Server:**
+**Server (CLOS API - Recommended):**
 ```lisp
+(use-package :clgrpc.grpc)
 (use-package :clgrpc.server)
 
-;; Define a handler
-(defclass greeter-handler () ())
+;; Define a service using CLOS
+(defclass greeter-service (grpc-service)
+  ()
+  (:metaclass grpc-service-metaclass)
+  (:service-name "helloworld.Greeter")
+  (:package "helloworld"))
 
-(defmethod handle-unary ((handler greeter-handler) service method request-bytes context)
+;; Define a method - automatic name conversion and serialization!
+(defgrpc-method say-hello ((service greeter-service)
+                           (request hello-request)
+                           context)
   (declare (ignore service context))
-  (when (string= method "SayHello")
-    (let* ((request (proto-deserialize 'hello-request request-bytes))
-           (name (hello-request-name request))
-           (reply (make-hello-reply :message (format nil "Hello ~A!" name))))
-      (values (proto-serialize reply)
-              +grpc-status-ok+ nil nil))))
+  (let ((name (hello-request-name request)))
+    (make-hello-reply :message (format nil "Hello ~A!" name))))
 
 ;; Create and start server
 (let ((server (make-server :port 50051)))
-  (register-handler (grpc-server-router server)
-                    "helloworld.Greeter" "SayHello"
-                    (make-instance 'greeter-handler)
-                    :rpc-type :unary)
+  ;; Automatic registration of all methods
+  (register-service (grpc-server-router server)
+                    (make-instance 'greeter-service))
   (start-server server)
   (format t "Server listening on port 50051~%")
   (loop (sleep 1)))  ; Keep running
 ```
 
-**Client:**
+**Client (CLOS API):**
 ```lisp
 (use-package :clgrpc.client)
+(use-package :clgrpc.grpc)
 
 ;; Create a channel and make a call
 (let ((channel (make-channel "localhost:50051" :secure nil)))
   (unwind-protect
-       (let* ((request (make-hello-request :name "World"))
-              (request-bytes (proto-serialize request)))
+       (let ((request (make-hello-request :name "World")))
          (multiple-value-bind (response-bytes status status-message)
-             (call-unary channel "helloworld.Greeter" "SayHello" request-bytes)
+             (call-unary channel "helloworld.Greeter" "SayHello"
+                        (proto-serialize request))
            (if (= status +grpc-status-ok+)
                (let ((reply (proto-deserialize 'hello-reply response-bytes)))
                  (format t "Response: ~A~%" (hello-reply-message reply)))
                (format t "Error: ~A (~D)~%" status-message status))))
     (close-channel channel)))
 ```
+
+**Key Features of CLOS API:**
+- ✅ No manual string matching - type-safe dispatch
+- ✅ Automatic request deserialization
+- ✅ Automatic response serialization (for unary RPCs)
+- ✅ Smart defaults: `say-hello` → `"SayHello"`, `:unary` default
+- ✅ Single registration call per service
+- ✅ Clean, minimal syntax matching Go/Python gRPC
 
 ## Requirements
 
@@ -156,6 +170,47 @@ Test dependencies:
 
 ### Creating a Server
 
+**CLOS API (Recommended):**
+
+```lisp
+(use-package :clgrpc.grpc)
+(use-package :clgrpc.server)
+
+;; Define a service class
+(defclass my-service (grpc-service)
+  ()
+  (:metaclass grpc-service-metaclass)
+  (:service-name "myservice.MyService")
+  (:package "myservice"))
+
+;; Define methods - automatic name conversion and serialization
+(defgrpc-method my-method ((service my-service)
+                          (request my-request)
+                          context)
+  (declare (ignore service context))
+  ;; Process the request (already deserialized!)
+  (let ((result (process-request request)))
+    ;; Return response object (auto-serialized!)
+    (make-my-response :result result)))
+
+;; Create and configure server
+(defvar *server* (make-server :port 50051))
+
+;; Register entire service (all methods automatically registered)
+(register-service (grpc-server-router *server*)
+                  (make-instance 'my-service))
+
+;; Start the server
+(start-server *server*)
+
+;; Stop when done
+(stop-server *server*)
+```
+
+**Low-Level Handler API (Advanced):**
+
+For fine-grained control, you can use the low-level handler API:
+
 ```lisp
 (use-package :clgrpc.server)
 
@@ -168,50 +223,107 @@ Test dependencies:
   (let ((response-bytes (process-request request-bytes)))
     (values response-bytes +grpc-status-ok+ nil nil)))
 
-;; Create and configure server
-(defvar *server* (make-server :port 50051))
-
-;; Register service handlers
+;; Register individual handlers
 (register-handler (grpc-server-router *server*)
                   "myservice.MyService" "MyMethod"
                   (make-instance 'my-handler)
                   :rpc-type :unary)
-
-;; Start the server
-(start-server *server*)
-
-;; Stop when done
-(stop-server *server*)
 ```
 
 ### Streaming RPCs
 
-clgrpc supports all four gRPC streaming patterns:
+clgrpc supports all four gRPC streaming patterns with the CLOS API:
 
 1. **Unary**: Client sends one, server sends one (shown above)
 2. **Client Streaming**: Client sends many, server sends one
 3. **Server Streaming**: Client sends one, server sends many
 4. **Bidirectional**: Both send many
 
-See `examples/routeguide/` for complete streaming examples.
+**Example - Server Streaming:**
+
+```lisp
+(defgrpc-method list-features ((service route-guide-service)
+                               (request rectangle)
+                               context)
+  (:rpc-type :server-streaming)
+
+  (let ((stream (get-stream context)))
+    (dolist (feature *features*)
+      (when (in-range? feature request)
+        ;; Send each feature to client
+        (server-stream-send stream (proto-serialize feature))))
+
+    (values +grpc-status-ok+ nil nil)))
+```
+
+**Example - Client Streaming:**
+
+```lisp
+(defgrpc-method record-route ((service route-guide-service)
+                              (request point)  ; Unused for streaming
+                              context)
+  (:rpc-type :client-streaming)
+  (:response-type route-summary)
+
+  (let ((stream (get-stream context))
+        (points nil))
+    ;; Receive all points from client
+    (loop for msg-bytes = (server-stream-recv stream)
+          while msg-bytes
+          do (push (proto-deserialize 'point msg-bytes) points))
+
+    ;; Return summary
+    (values (proto-serialize (make-route-summary :count (length points)))
+            +grpc-status-ok+ nil nil)))
+```
+
+See `examples/routeguide/server-clos.lisp` for complete streaming examples including bidirectional streaming.
 
 ### Protocol Buffers
 
-clgrpc includes a complete proto3 implementation with a parser and code generator:
+clgrpc includes a complete proto3 implementation with CLOS-based messages and code generation:
+
+**CLOS Message API (Recommended):**
 
 ```lisp
-;; Generate Common Lisp code from .proto file
+;; Define messages using CLOS
+(defclass person (proto-message)
+  ((name
+    :initarg :name
+    :accessor person-name
+    :field 1
+    :proto-type :string)
+   (age
+    :initarg :age
+    :accessor person-age
+    :field 2
+    :proto-type :int32))
+  (:metaclass proto-metaclass))
+
+;; Use the messages
+(let* ((person (make-instance 'person :name "Alice" :age 30))
+       (bytes (proto-serialize person)))
+  (let ((decoded (proto-deserialize 'person bytes)))
+    (format t "Name: ~A, Age: ~D~%"
+            (person-name decoded)
+            (person-age decoded))))
+```
+
+**Code Generation from .proto:**
+
+```lisp
+;; Generate CLOS-based Common Lisp code from .proto file
 (compile-proto-file "my-service.proto" "generated.lisp")
 
-;; Load the generated code
+;; Load the generated code (includes CLOS classes)
 (load "generated.lisp")
 
-;; Use the generated encoder/decoder functions
-(let ((bytes (encode-my-message name age email)))
-  (multiple-value-bind (name age email)
-      (decode-my-message bytes)
-    (format t "Name: ~A, Age: ~D~%" name age)))
+;; Use the generated classes
+(let ((person (make-person :name "Alice" :age 30)))
+  (format t "Name: ~A~%" (person-name person)))
 ```
+
+The code generator produces clean CLOS-based code that can be used directly or serve as a reference for hand-written definitions.
 
 ## Technical Overview
 
@@ -256,11 +368,17 @@ All tests should pass with output: `390/390 tests passing (100%)`
 ## Examples
 
 - **HelloWorld**: Basic unary RPC example
+  - `server-clos.lisp` - CLOS-based server (recommended)
+  - `client-clos.lisp` - CLOS-based client with message API
 - **RouteGuide**: Comprehensive example demonstrating all four streaming patterns
-  - `GetFeature`: Unary RPC
-  - `ListFeatures`: Server streaming RPC
-  - `RecordRoute`: Client streaming RPC
-  - `RouteChat`: Bidirectional streaming RPC
+  - `server-clos.lisp` - CLOS-based server with all RPC types (recommended)
+  - `server.lisp` - Low-level handler-based server (advanced)
+  - See `CLOS-COMPARISON.md` for side-by-side comparison
+  - Methods:
+    - `GetFeature`: Unary RPC
+    - `ListFeatures`: Server streaming RPC
+    - `RecordRoute`: Client streaming RPC
+    - `RouteChat`: Bidirectional streaming RPC
 
 See the `examples/` directory for complete working examples.
 
