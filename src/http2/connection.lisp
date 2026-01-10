@@ -21,7 +21,7 @@
   (socket nil)  ; Underlying socket/stream
   (is-client t :type boolean)  ; Client or server
   (streams (make-hash-table :test 'eql) :type hash-table)  ; Stream ID -> http2-stream
-  (active-calls (make-hash-table :test 'eql) :type hash-table)  ; Stream ID -> grpc-call (for client)
+  (active-calls (make-hash-table :test 'eql) :type hash-table)  ; Stream ID -> grpc-call (for client) OR server-stream-state (for server)
   (next-stream-id 1 :type (unsigned-byte 31))  ; Next stream ID to use
   (local-settings (make-default-settings))
   (remote-settings (make-default-settings))

@@ -4,7 +4,10 @@
 
 (require :asdf)
 
-;; Load Quicklisp
+;; Load Quicklisp (check both .quicklisp and quicklisp directories)
+(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
 (let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
   (when (probe-file quicklisp-init)
     (load quicklisp-init)))
@@ -17,7 +20,9 @@
 (ql:quickload :alexandria :verbose nil :silent t)
 
 ;; Load clgrpc
-(push (truename "../../../") asdf:*central-registry*)
+(push (make-pathname :name nil :type nil
+                     :defaults (merge-pathnames "../../../" *load-truename*))
+      asdf:*central-registry*)
 (asdf:load-system :clgrpc)
 
 (defpackage #:helloworld-client

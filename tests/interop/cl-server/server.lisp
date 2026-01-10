@@ -3,7 +3,26 @@
 ;;;; This server implements the HelloWorld service for Go/CL clients.
 
 (require :asdf)
-(push (truename "../../../") asdf:*central-registry*)
+
+;; Load Quicklisp (check both .quicklisp and quicklisp directories)
+(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+
+;; Load dependencies via Quicklisp
+(ql:quickload :babel :verbose nil :silent t)
+(ql:quickload :bordeaux-threads :verbose nil :silent t)
+(ql:quickload :usocket :verbose nil :silent t)
+(ql:quickload :cl+ssl :verbose nil :silent t)
+(ql:quickload :alexandria :verbose nil :silent t)
+
+;; Load clgrpc
+(push (make-pathname :name nil :type nil
+                     :defaults (merge-pathnames "../../../" *load-truename*))
+      asdf:*central-registry*)
 (asdf:load-system :clgrpc)
 
 (defpackage #:helloworld-server
@@ -25,7 +44,10 @@
   "Handle unary RPC for Greeter service.
 
    Implements:
-     rpc SayHello (HelloRequest) returns (HelloReply)"
+     rpc SayHello (HelloRequest) returns (HelloReply)
+
+   NOTE: request-bytes are already decoded from gRPC framing by the server.
+   This handler receives raw protobuf bytes and must return raw protobuf bytes."
 
   (declare (ignore context))
 
@@ -33,30 +55,27 @@
           (get-universal-time)
           service-name
           method-name)
+  (format t "  Request protobuf: ~D bytes~%" (length request-bytes))
 
   (cond
     ((string= method-name "SayHello")
-     ;; Decode gRPC-framed request
-     (let ((request-protobuf (clgrpc.grpc:decode-grpc-message request-bytes)))
-       (format t "  Request: ~D bytes~%" (length request-protobuf))
+     ;; Decode HelloRequest protobuf message (already unwrapped from gRPC framing)
+     (let ((name (clgrpc.grpc:decode-hello-request request-bytes)))
+       (format t "  HelloRequest { name: ~S }~%" name)
 
-       ;; Decode HelloRequest protobuf message
-       (let ((name (clgrpc.grpc:decode-hello-request request-protobuf)))
-         (format t "  HelloRequest { name: ~S }~%" name)
+       ;; Build response
+       (let* ((reply-message (format nil "Hello ~A" name))
+              (reply-protobuf (clgrpc.grpc:encode-hello-reply reply-message)))
 
-         ;; Build response
-         (let* ((reply-message (format nil "Hello ~A" name))
-                (reply-protobuf (clgrpc.grpc:encode-hello-reply reply-message))
-                (reply-grpc (clgrpc.grpc:encode-grpc-message reply-protobuf)))
+         (format t "  HelloReply { message: ~S }~%" reply-message)
+         (format t "  Response protobuf: ~D bytes~%~%" (length reply-protobuf))
 
-           (format t "  HelloReply { message: ~S }~%" reply-message)
-           (format t "  Response: ~D bytes~%~%" (length reply-grpc))
-
-           ;; Return: (values response-bytes status-code status-message response-metadata)
-           (values reply-grpc
-                   clgrpc.grpc:+grpc-status-ok+
-                   nil
-                   nil)))))
+         ;; Return: (values response-bytes status-code status-message response-metadata)
+         ;; NOTE: Server will wrap response in gRPC message framing
+         (values reply-protobuf
+                 clgrpc.grpc:+grpc-status-ok+
+                 nil
+                 nil))))
 
     (t
      ;; Unknown method
@@ -109,10 +128,8 @@
 
 (defun main ()
   "Entry point for the server"
-  (let ((port-str (second sb-ext:*posix-argv*)))
-    (if port-str
-        (run-server :port (parse-integer port-str :junk-allowed t))
-        (run-server))))
+  ;; Default to port 50051
+  (run-server :port 50051))
 
 ;; Run if loaded as script
 (when (member "--run" sb-ext:*posix-argv* :test #'string=)
