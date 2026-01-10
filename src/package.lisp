@@ -396,7 +396,14 @@
    #:message-text
    #:make-simple-text-message
 
-   ;; Simple Protobuf (HelloWorld messages)
+   ;; HelloWorld messages (CLOS-based)
+   #:hello-request
+   #:make-hello-request
+   #:hello-request-name
+   #:hello-reply
+   #:make-hello-reply
+   #:hello-reply-message
+   ;; Backward compatibility (deprecated)
    #:encode-hello-request
    #:decode-hello-request
    #:encode-hello-reply
