@@ -45,6 +45,7 @@
      (:file "protocol")
      (:file "protobuf-simple")
      (:file "protobuf" :depends-on ("protobuf-simple"))
+     (:file "reflection" :depends-on ("protobuf-simple"))
      (:file "helloworld")))
 
    (:module "transport"
@@ -56,6 +57,7 @@
    (:module "client"
     :components
     ((:file "call")
+     (:file "streaming")
      (:file "connection-pool")
      (:file "client")
      (:file "stub")))
@@ -65,6 +67,8 @@
     ((:file "handler")
      (:file "router")
      (:file "service")
+     (:file "streaming")
+     (:file "reflection-service")
      (:file "server"))))
 
   :in-order-to ((test-op (test-op "clgrpc-tests"))))

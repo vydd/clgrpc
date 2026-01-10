@@ -142,5 +142,134 @@
   (bordeaux-threads:with-lock-held ((grpc-channel-calls-lock channel))
     (gethash stream-id (grpc-channel-active-calls channel))))
 
+;;; Streaming RPCs
+
+(defun call-client-streaming (channel service method &key timeout metadata)
+  "Start a client streaming call (client sends many → server sends one).
+
+   Args:
+     channel: grpc-channel created with make-channel
+     service: Service name string (e.g., \"helloworld.Greeter\")
+     method: Method name string (e.g., \"StreamingHello\")
+     timeout: Optional timeout in milliseconds
+     metadata: Optional list of (name . value) pairs for custom headers
+
+   Returns:
+     grpc-stream - use stream-send to send messages, stream-close-send when done,
+                   then stream-recv to get the single response
+
+   Example:
+     (let* ((channel (make-channel \"localhost:50051\" :secure nil))
+            (stream (call-client-streaming channel \"service\" \"method\")))
+       (unwind-protect
+            (progn
+              (stream-send stream request1-bytes)
+              (stream-send stream request2-bytes)
+              (stream-close-send stream)
+              (let ((response (stream-recv stream)))
+                (process-response response)))
+         (close-channel channel)))"
+  (when (grpc-channel-closed channel)
+    (error "Channel is closed"))
+
+  ;; Get connection from pool
+  (let ((connection (pool-get-connection (grpc-channel-pool channel))))
+
+    ;; Create stream
+    (let ((stream (create-stream connection service method
+                                :authority (grpc-channel-target channel)
+                                :timeout timeout
+                                :metadata metadata)))
+
+      ;; Start stream (sends HEADERS)
+      (stream-start stream)
+
+      stream)))
+
+(defun call-server-streaming (channel service method request &key timeout metadata)
+  "Start a server streaming call (client sends one → server sends many).
+
+   Args:
+     channel: grpc-channel created with make-channel
+     service: Service name string (e.g., \"helloworld.Greeter\")
+     method: Method name string (e.g., \"StreamingHello\")
+     request: Request message bytes (serialized protobuf)
+     timeout: Optional timeout in milliseconds
+     metadata: Optional list of (name . value) pairs for custom headers
+
+   Returns:
+     grpc-stream - use stream-recv repeatedly to receive responses (returns nil when done)
+
+   Example:
+     (let* ((channel (make-channel \"localhost:50051\" :secure nil))
+            (stream (call-server-streaming channel \"service\" \"method\" request-bytes)))
+       (unwind-protect
+            (loop for response = (stream-recv stream)
+                  while response
+                  do (process-response response))
+         (close-channel channel)))"
+  (when (grpc-channel-closed channel)
+    (error "Channel is closed"))
+
+  ;; Get connection from pool
+  (let ((connection (pool-get-connection (grpc-channel-pool channel))))
+
+    ;; Create stream
+    (let ((stream (create-stream connection service method
+                                :authority (grpc-channel-target channel)
+                                :timeout timeout
+                                :metadata metadata)))
+
+      ;; Send request and close send side
+      (stream-send stream request)
+      (stream-close-send stream)
+
+      stream)))
+
+(defun call-bidirectional-streaming (channel service method &key timeout metadata)
+  "Start a bidirectional streaming call (both send many).
+
+   Args:
+     channel: grpc-channel created with make-channel
+     service: Service name string (e.g., \"helloworld.Greeter\")
+     method: Method name string (e.g., \"StreamingHello\")
+     timeout: Optional timeout in milliseconds
+     metadata: Optional list of (name . value) pairs for custom headers
+
+   Returns:
+     grpc-stream - use stream-send to send messages, stream-recv to receive messages
+                   call stream-close-send when done sending
+
+   Example:
+     (let* ((channel (make-channel \"localhost:50051\" :secure nil))
+            (stream (call-bidirectional-streaming channel \"service\" \"method\")))
+       (unwind-protect
+            (progn
+              ;; Can send and receive in any order
+              (stream-send stream request1-bytes)
+              (let ((response1 (stream-recv stream)))
+                (process-response response1))
+              (stream-send stream request2-bytes)
+              (let ((response2 (stream-recv stream)))
+                (process-response response2))
+              (stream-close-send stream))
+         (close-channel channel)))"
+  (when (grpc-channel-closed channel)
+    (error "Channel is closed"))
+
+  ;; Get connection from pool
+  (let ((connection (pool-get-connection (grpc-channel-pool channel))))
+
+    ;; Create stream
+    (let ((stream (create-stream connection service method
+                                :authority (grpc-channel-target channel)
+                                :timeout timeout
+                                :metadata metadata)))
+
+      ;; Start stream (sends HEADERS)
+      (stream-start stream)
+
+      stream)))
+
 ;;; Helper: Connect call registry to connection pool
 ;;; Note: find-call-by-stream-id is defined in connection-pool.lisp

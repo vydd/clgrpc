@@ -144,7 +144,10 @@
 
 ;;; Frame Handling (called by connection's frame dispatcher)
 
-(defun call-handle-headers (call headers end-stream)
+(defgeneric call-handle-headers (call headers end-stream)
+  (:documentation "Handle HEADERS frame for a call."))
+
+(defmethod call-handle-headers ((call grpc-call) headers end-stream)
   "Handle HEADERS or CONTINUATION frame for this call.
 
    Args:
@@ -199,7 +202,10 @@
             (setf (grpc-call-completed call) t)
             (bordeaux-threads:condition-notify (grpc-call-condition call)))))))
 
-(defun call-handle-data (call data end-stream)
+(defgeneric call-handle-data (call data end-stream)
+  (:documentation "Handle DATA frame for a call."))
+
+(defmethod call-handle-data ((call grpc-call) data end-stream)
   "Handle DATA frame for this call.
 
    Args:
@@ -226,7 +232,10 @@
       (setf (grpc-call-completed call) t)
       (bordeaux-threads:condition-notify (grpc-call-condition call)))))
 
-(defun call-handle-rst-stream (call error-code)
+(defgeneric call-handle-rst-stream (call error-code)
+  (:documentation "Handle RST_STREAM frame for a call."))
+
+(defmethod call-handle-rst-stream ((call grpc-call) error-code)
   "Handle RST_STREAM frame for this call.
 
    Args:

@@ -400,7 +400,12 @@
    #:encode-hello-request
    #:decode-hello-request
    #:encode-hello-reply
-   #:decode-hello-reply))
+   #:decode-hello-reply
+
+   ;; Reflection Protocol
+   #:encode-reflection-request-list-services
+   #:decode-reflection-request
+   #:encode-reflection-response-list-services))
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")
@@ -411,6 +416,17 @@
    #:make-channel
    #:close-channel
    #:call-unary
+
+   ;; Streaming API
+   #:call-client-streaming
+   #:call-server-streaming
+   #:call-bidirectional-streaming
+   #:grpc-stream
+   #:create-stream
+   #:stream-start
+   #:stream-send
+   #:stream-recv
+   #:stream-close-send
 
    ;; Client call
    #:client-call
@@ -436,6 +452,17 @@
 
    ;; Handler interface
    #:handle-unary
+   #:handle-client-streaming
+   #:handle-server-streaming
+   #:handle-bidirectional-streaming
+
+   ;; Server streaming operations
+   #:grpc-server-stream
+   #:server-stream-send
+   #:server-stream-recv
+
+   ;; Reflection service
+   #:register-reflection-service
 
    ;; Service definition
    #:define-grpc-service))

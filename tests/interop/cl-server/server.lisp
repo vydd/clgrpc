@@ -109,6 +109,12 @@
      handler)
 
     (format t "Service registered!~%~%")
+
+    ;; Register reflection service (for grpc_cli and grpcurl)
+    (format t "Registering reflection service...~%")
+    (clgrpc.server:register-reflection-service server)
+    (format t "Reflection service registered!~%~%")
+
     (format t "Starting server on port ~D...~%" port)
 
     ;; Start server

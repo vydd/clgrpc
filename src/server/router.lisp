@@ -6,9 +6,14 @@
 
 ;;; Router Structure
 
+(defstruct route-entry
+  "Represents a registered route"
+  (handler nil)                         ; Handler instance
+  (rpc-type :unary :type keyword))     ; :unary, :client-streaming, :server-streaming, :bidirectional
+
 (defstruct grpc-router
   "Routes requests to handlers"
-  (routes (make-hash-table :test 'equal) :type hash-table)  ; path -> handler
+  (routes (make-hash-table :test 'equal) :type hash-table)  ; path -> route-entry
   (default-handler (make-instance 'default-handler))
   (lock (bordeaux-threads:make-lock "router-lock")))
 
@@ -22,7 +27,7 @@
 
 ;;; Route Registration
 
-(defun register-handler (router service-name method-name handler)
+(defun register-handler (router service-name method-name handler &key (rpc-type :unary))
   "Register a handler for a specific service/method.
 
    Args:
@@ -30,12 +35,16 @@
      service-name: Service name (e.g., \"helloworld.Greeter\")
      method-name: Method name (e.g., \"SayHello\")
      handler: Handler instance
+     rpc-type: RPC type - :unary, :client-streaming, :server-streaming, :bidirectional
 
    Example:
-     (register-handler router \"helloworld.Greeter\" \"SayHello\" my-handler)"
+     (register-handler router \"helloworld.Greeter\" \"SayHello\" my-handler)
+     (register-handler router \"helloworld.Greeter\" \"StreamHellos\" my-handler
+                      :rpc-type :server-streaming)"
   (let ((path (make-grpc-path service-name method-name)))
     (bordeaux-threads:with-lock-held ((grpc-router-lock router))
-      (setf (gethash path (grpc-router-routes router)) handler))))
+      (setf (gethash path (grpc-router-routes router))
+            (make-route-entry :handler handler :rpc-type rpc-type)))))
 
 (defun unregister-handler (router service-name method-name)
   "Unregister a handler for a service/method.
@@ -85,17 +94,24 @@
      path: gRPC path string (from :path pseudo-header)
 
    Returns:
-     (values handler service-name method-name)"
+     (values handler service-name method-name rpc-type)"
   (multiple-value-bind (service method)
       (parse-grpc-path path)
     (if (and service method)
         (bordeaux-threads:with-lock-held ((grpc-router-lock router))
-          (let ((handler (gethash path (grpc-router-routes router))))
-            (values (or handler (grpc-router-default-handler router))
-                    service
-                    method)))
+          (let ((entry (gethash path (grpc-router-routes router))))
+            (if entry
+                (values (route-entry-handler entry)
+                        service
+                        method
+                        (route-entry-rpc-type entry))
+                ;; Not found - return default handler with unary type
+                (values (grpc-router-default-handler router)
+                        service
+                        method
+                        :unary))))
         ;; Invalid path - return default handler with nil names
-        (values (grpc-router-default-handler router) nil nil))))
+        (values (grpc-router-default-handler router) nil nil :unary))))
 
 ;;; Bulk Registration
 

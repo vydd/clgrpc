@@ -81,3 +81,105 @@
     (lambda (service-name method-name request-bytes context)
       (declare (ignorable service-name method-name context))
       ,@body)))
+
+;;; Streaming Handler Protocols
+
+(defgeneric handle-client-streaming (handler service-name method-name stream context)
+  (:documentation "Handle a client streaming RPC (client sends many → server sends one).
+
+   Args:
+     handler: Handler instance
+     service-name: Service name string
+     method-name: Method name string
+     stream: grpc-server-stream for receiving messages
+     context: handler-context with request metadata
+
+   Returns:
+     (values response-bytes status-code status-message response-metadata)
+
+   Handler should:
+     - Call (server-stream-recv stream) repeatedly to receive messages
+     - Return single response when done
+
+   Example:
+     (defmethod handle-client-streaming ((handler my-handler) service method stream ctx)
+       (let ((messages nil))
+         (loop for msg = (server-stream-recv stream)
+               while msg
+               do (push msg messages))
+         (let ((response (process-all-messages (nreverse messages))))
+           (values response +grpc-status-ok+ nil nil))))"))
+
+(defgeneric handle-server-streaming (handler service-name method-name request-bytes stream context)
+  (:documentation "Handle a server streaming RPC (client sends one → server sends many).
+
+   Args:
+     handler: Handler instance
+     service-name: Service name string
+     method-name: Method name string
+     request-bytes: Single request message (serialized protobuf)
+     stream: grpc-server-stream for sending responses
+     context: handler-context with request metadata
+
+   Returns:
+     (values status-code status-message response-metadata)
+
+   Handler should:
+     - Process the single request-bytes
+     - Call (server-stream-send stream response-bytes) for each response
+     - Return status when done (do NOT close stream, server will do that)
+
+   Example:
+     (defmethod handle-server-streaming ((handler my-handler) service method req stream ctx)
+       (let ((items (process-request req)))
+         (dolist (item items)
+           (server-stream-send stream (serialize-item item)))
+         (values +grpc-status-ok+ nil nil)))"))
+
+(defgeneric handle-bidirectional-streaming (handler service-name method-name stream context)
+  (:documentation "Handle a bidirectional streaming RPC (both send many).
+
+   Args:
+     handler: Handler instance
+     service-name: Service name string
+     method-name: Method name string
+     stream: grpc-server-stream for both sending and receiving
+     context: handler-context with request metadata
+
+   Returns:
+     (values status-code status-message response-metadata)
+
+   Handler should:
+     - Call (server-stream-recv stream) to receive messages
+     - Call (server-stream-send stream response-bytes) to send responses
+     - Can interleave receives and sends in any order
+     - Return status when done
+
+   Example:
+     (defmethod handle-bidirectional-streaming ((handler my-handler) service method stream ctx)
+       (loop for msg = (server-stream-recv stream :timeout-ms 1000)
+             while msg
+             do (let ((response (process-message msg)))
+                  (server-stream-send stream response)))
+       (values +grpc-status-ok+ nil nil)))"))
+
+;;; Default implementations for streaming (return UNIMPLEMENTED)
+
+(defmethod handle-client-streaming ((handler default-handler) service-name method-name stream context)
+  (declare (ignore stream context))
+  (values nil
+          +grpc-status-unimplemented+
+          (format nil "Method ~A/~A not implemented" service-name method-name)
+          nil))
+
+(defmethod handle-server-streaming ((handler default-handler) service-name method-name request-bytes stream context)
+  (declare (ignore request-bytes stream context))
+  (values +grpc-status-unimplemented+
+          (format nil "Method ~A/~A not implemented" service-name method-name)
+          nil))
+
+(defmethod handle-bidirectional-streaming ((handler default-handler) service-name method-name stream context)
+  (declare (ignore stream context))
+  (values +grpc-status-unimplemented+
+          (format nil "Method ~A/~A not implemented" service-name method-name)
+          nil))

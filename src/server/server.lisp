@@ -23,7 +23,12 @@
   (headers nil :type list)
   (data nil :type (or null (vector (unsigned-byte 8))))
   (complete nil :type boolean)
-  (lock (bordeaux-threads:make-lock "stream-state-lock")))
+  (lock (bordeaux-threads:make-lock "stream-state-lock"))
+  ;; For server-streaming RPCs, we store handler info to invoke after receiving request
+  (rpc-type nil :type (or null keyword))
+  (handler nil)
+  (service nil :type (or null string))
+  (method nil :type (or null string)))
 
 ;;; Server Lifecycle
 
@@ -241,26 +246,87 @@
 
     (format *error-output* "SERVER: HEADERS stream=~D end-stream=~A~%" stream-id end-stream)
 
-    ;; Create stream state to accumulate request
-    (let ((stream-state (make-server-stream-state
-                         :stream-id stream-id
-                         :headers headers
-                         :data nil
-                         :complete end-stream)))  ; Mark complete if no body expected
+    ;; Extract path to determine RPC type
+    (let ((path (or (cdr (assoc :path headers))
+                    (cdr (assoc ":path" headers :test #'string=)))))
 
-      ;; Register stream state (reuse active-calls hash table for server)
-      (setf (gethash stream-id (http2-connection-active-calls connection))
-            stream-state)
+      (multiple-value-bind (handler service method rpc-type)
+          (route-request (grpc-server-router server) path)
 
-      ;; If END_STREAM, request is complete (headers-only request)
-      (when end-stream
-        (server-process-complete-request server connection stream-id stream-state)))))
+        (format *error-output* "SERVER: RPC type=~A service=~A method=~A~%"
+                rpc-type service method)
+
+        (cond
+          ;; Client-streaming or Bidirectional - invoke handler immediately
+          ((member rpc-type '(:client-streaming :bidirectional))
+           (let ((stream (make-grpc-server-stream
+                          :connection connection
+                          :stream-id stream-id
+                          :headers headers
+                          :recv-closed end-stream
+                          :send-closed nil
+                          :request-queue (make-queue))))
+
+             ;; Register stream
+             (setf (gethash stream-id (http2-connection-active-calls connection))
+                   stream)
+
+             ;; Send initial response headers (for bidirectional)
+             (when (eq rpc-type :bidirectional)
+               (server-send-initial-headers connection stream-id))
+
+             ;; Spawn handler thread immediately
+             (let ((context (make-handler-context
+                             :stream-id stream-id
+                             :connection connection
+                             :metadata headers)))
+
+               (bordeaux-threads:make-thread
+                (lambda () (server-handle-streaming-request
+                            handler service method stream context rpc-type))
+                :name (format nil "grpc-streaming-~D" stream-id)))))
+
+          ;; Server-streaming - need to wait for request, use state accumulation
+          ((eq rpc-type :server-streaming)
+           (let ((stream-state (make-server-stream-state
+                                :stream-id stream-id
+                                :headers headers
+                                :data nil
+                                :complete end-stream
+                                :rpc-type :server-streaming  ; Mark as server-streaming
+                                :handler handler
+                                :service service
+                                :method method)))
+
+             ;; Register stream state
+             (setf (gethash stream-id (http2-connection-active-calls connection))
+                   stream-state)
+
+             ;; If END_STREAM, request is complete (shouldn't happen for normal calls)
+             (when end-stream
+               (server-process-complete-request server connection stream-id stream-state))))
+
+          ;; Unary RPC - use existing accumulation approach
+          (t
+           (let ((stream-state (make-server-stream-state
+                                :stream-id stream-id
+                                :headers headers
+                                :data nil
+                                :complete end-stream)))
+
+             ;; Register stream state
+             (setf (gethash stream-id (http2-connection-active-calls connection))
+                   stream-state)
+
+             ;; If END_STREAM, request is complete (headers-only request)
+             (when end-stream
+               (server-process-complete-request server connection stream-id stream-state))))))))
 
 (defun server-handle-data-frame (server connection frame)
   "Handle DATA frame - request body.
 
-   Accumulates data for the stream. When END_STREAM is received,
-   triggers request processing."
+   For unary RPCs: accumulates data until END_STREAM, then processes.
+   For streaming RPCs: decodes gRPC messages and adds to queue."
   (let ((stream-id (frame-stream-id frame))
         (data (frame-payload frame))
         (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
@@ -268,7 +334,7 @@
     (format *error-output* "SERVER: DATA stream=~D len=~D end-stream=~A~%"
             stream-id (length data) end-stream)
 
-    ;; Find stream state
+    ;; Find stream state (could be server-stream-state or grpc-server-stream)
     (let ((stream-state
             (gethash stream-id (http2-connection-active-calls connection))))
 
@@ -276,26 +342,52 @@
         (format *error-output* "WARNING: DATA for unknown stream ~D~%" stream-id)
         (return-from server-handle-data-frame nil))
 
-      ;; Accumulate data
-      (bt:with-lock-held ((server-stream-state-lock stream-state))
-        (if (server-stream-state-data stream-state)
-            ;; Append to existing data
-            (let* ((existing (server-stream-state-data stream-state))
-                   (new-len (+ (length existing) (length data)))
-                   (result (make-byte-array new-len)))
-              (replace result existing)
-              (replace result data :start1 (length existing))
-              (setf (server-stream-state-data stream-state) result))
-            ;; First data chunk
-            (setf (server-stream-state-data stream-state) (copy-seq data)))
+      (cond
+        ;; Streaming RPC - decode messages and add to queue
+        ((typep stream-state 'grpc-server-stream)
+         (format *error-output* "SERVER: Streaming RPC - decoding gRPC messages~%")
 
-        ;; Mark complete if END_STREAM
-        (when end-stream
-          (setf (server-stream-state-complete stream-state) t)))
+         ;; Decode gRPC message from DATA frame
+         (when (> (length data) 0)
+           (handler-case
+               (multiple-value-bind (message-bytes compressed total-read)
+                   (decode-grpc-message data)
+                 (declare (ignore compressed total-read))
 
-      ;; If request is complete, process it
-      (when end-stream
-        (server-process-complete-request server connection stream-id stream-state)))))
+                 (format *error-output* "SERVER: Decoded message (~D bytes), adding to queue~%"
+                         (length message-bytes))
+
+                 ;; Add to stream queue
+                 (server-stream-add-message stream-state message-bytes))
+             (error (e)
+               (format *error-output* "SERVER: Error decoding message: ~A~%" e))))
+
+         ;; Mark stream closed if END_STREAM
+         (when end-stream
+           (format *error-output* "SERVER: Received END_STREAM, marking recv closed~%")
+           (server-stream-mark-recv-closed stream-state)))
+
+        ;; Unary RPC - accumulate data
+        (t
+         (bt:with-lock-held ((server-stream-state-lock stream-state))
+           (if (server-stream-state-data stream-state)
+               ;; Append to existing data
+               (let* ((existing (server-stream-state-data stream-state))
+                      (new-len (+ (length existing) (length data)))
+                      (result (make-byte-array new-len)))
+                 (replace result existing)
+                 (replace result data :start1 (length existing))
+                 (setf (server-stream-state-data stream-state) result))
+               ;; First data chunk
+               (setf (server-stream-state-data stream-state) (copy-seq data)))
+
+           ;; Mark complete if END_STREAM
+           (when end-stream
+             (setf (server-stream-state-complete stream-state) t)))
+
+         ;; If request is complete, process it
+         (when end-stream
+           (server-process-complete-request server connection stream-id stream-state))))))))
 
 (defun server-handle-settings-frame (connection frame)
   "Handle SETTINGS frame.
@@ -332,6 +424,91 @@
 
 ;;; Request Handling
 
+(defun server-send-initial-headers (connection stream-id)
+  "Send initial response headers for streaming RPC.
+
+   Args:
+     connection: http2-connection
+     stream-id: HTTP/2 stream ID"
+  (let ((encoder-ctx (http2-connection-hpack-encoder connection)))
+    (let ((headers (encode-grpc-response-headers :metadata nil)))
+      (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
+        (let ((headers-frame (make-http2-frame
+                              :length (length headers-bytes)
+                              :type +frame-type-headers+
+                              :flags +flag-end-headers+
+                              :stream-id stream-id
+                              :payload headers-bytes)))
+          (write-frame-to-stream headers-frame (http2-connection-socket connection)))))))
+
+(defun server-handle-streaming-request (handler service method stream context rpc-type)
+  "Handle client-streaming or bidirectional streaming gRPC request.
+
+   Args:
+     handler: Handler instance
+     service: Service name
+     method: Method name
+     stream: grpc-server-stream
+     context: handler-context
+     rpc-type: RPC type (:client-streaming or :bidirectional)"
+  (format *error-output* "SERVER: Streaming handler service=~A method=~A rpc-type=~A~%"
+          service method rpc-type)
+
+  (handler-case
+      (progn
+        ;; Dispatch to appropriate handler method
+        (multiple-value-bind (status-code status-message response-metadata)
+            (ecase rpc-type
+              (:client-streaming
+               (handle-client-streaming handler service method stream context))
+              (:bidirectional
+               (handle-bidirectional-streaming handler service method stream context)))
+
+          (format *error-output* "SERVER: Streaming handler returned status=~D~%"
+                  status-code)
+
+          ;; Close stream with status
+          (server-stream-close stream status-code status-message response-metadata)))
+
+    (error (e)
+      ;; Error in handler - send INTERNAL error
+      (format *error-output* "SERVER: Streaming handler error: ~A~%" e)
+      (server-stream-close stream +grpc-status-internal+
+                          (format nil "Internal error: ~A" e)
+                          nil))))
+
+(defun server-handle-server-streaming-request (handler service method request-bytes stream context)
+  "Handle server-streaming gRPC request.
+
+   Args:
+     handler: Handler instance
+     service: Service name
+     method: Method name
+     request-bytes: Initial request message
+     stream: grpc-server-stream
+     context: handler-context"
+  (format *error-output* "SERVER: Server-streaming handler service=~A method=~A request-len=~D~%"
+          service method (length request-bytes))
+
+  (handler-case
+      (progn
+        ;; Call handler with request-bytes
+        (multiple-value-bind (status-code status-message response-metadata)
+            (handle-server-streaming handler service method request-bytes stream context)
+
+          (format *error-output* "SERVER: Server-streaming handler returned status=~D~%"
+                  status-code)
+
+          ;; Close stream with status
+          (server-stream-close stream status-code status-message response-metadata)))
+
+    (error (e)
+      ;; Error in handler - send INTERNAL error
+      (format *error-output* "SERVER: Server-streaming handler error: ~A~%" e)
+      (server-stream-close stream +grpc-status-internal+
+                          (format nil "Internal error: ~A" e)
+                          nil))))
+
 (defun server-process-complete-request (server connection stream-id stream-state)
   "Process a complete request (all DATA frames received).
 
@@ -358,25 +535,58 @@
                 ;; No data - empty request
                 (make-byte-array 0))))
 
-      ;; Route to handler (path can be keyword :PATH or string ":path")
-      (let ((path (or (cdr (assoc :path headers))
-                      (cdr (assoc ":path" headers :test #'string=)))))
-        (multiple-value-bind (handler service method)
-            (route-request (grpc-server-router server) path)
-
-          ;; Create handler context
-          (let ((context (make-handler-context
-                          :stream-id stream-id
+      ;; Check if this is a server-streaming RPC (handler was stored in stream-state)
+      (if (eq (server-stream-state-rpc-type stream-state) :server-streaming)
+          ;; Server-streaming: create stream and invoke handler
+          (let* ((handler (server-stream-state-handler stream-state))
+                 (service (server-stream-state-service stream-state))
+                 (method (server-stream-state-method stream-state))
+                 (stream (make-grpc-server-stream
                           :connection connection
-                          :metadata headers)))
+                          :stream-id stream-id
+                          :headers headers
+                          :recv-closed t  ; Already received the request
+                          :send-closed nil
+                          :request-queue (make-queue))))
 
-            ;; Spawn thread to handle request (allows concurrent requests)
-            (bordeaux-threads:make-thread
-             (lambda () (server-handle-request server connection stream-id
-                                              handler service method request-bytes context))
-             :name (format nil "grpc-request-~D" stream-id))))))))
+            ;; Replace stream-state with grpc-server-stream
+            (setf (gethash stream-id (http2-connection-active-calls connection))
+                  stream)
 
-(defun server-handle-request (server connection stream-id handler service method request-bytes context)
+            ;; Send initial response headers
+            (server-send-initial-headers connection stream-id)
+
+            ;; Create context
+            (let ((context (make-handler-context
+                            :stream-id stream-id
+                            :connection connection
+                            :metadata headers)))
+
+              ;; Spawn handler thread
+              (bordeaux-threads:make-thread
+               (lambda () (server-handle-server-streaming-request
+                           handler service method request-bytes stream context))
+               :name (format nil "grpc-server-streaming-~D" stream-id))))
+
+          ;; Unary RPC - route to handler
+          (let ((path (or (cdr (assoc :path headers))
+                          (cdr (assoc ":path" headers :test #'string=)))))
+            (multiple-value-bind (handler service method rpc-type)
+                (route-request (grpc-server-router server) path)
+
+              ;; Create handler context
+              (let ((context (make-handler-context
+                              :stream-id stream-id
+                              :connection connection
+                              :metadata headers)))
+
+                ;; Spawn thread to handle request (allows concurrent requests)
+                (bordeaux-threads:make-thread
+                 (lambda () (server-handle-request server connection stream-id
+                                                  handler service method request-bytes context rpc-type))
+                 :name (format nil "grpc-request-~D" stream-id)))))))))
+
+(defun server-handle-request (server connection stream-id handler service method request-bytes context rpc-type)
   "Handle a complete gRPC request.
 
    Args:
@@ -387,25 +597,36 @@
      service: Service name
      method: Method name
      request-bytes: Deserialized request bytes (protobuf message)
-     context: handler-context"
+     context: handler-context
+     rpc-type: RPC type (:unary, :client-streaming, :server-streaming, :bidirectional)"
   (declare (ignore server))
 
-  (format *error-output* "SERVER: Calling handler service=~A method=~A request-len=~D~%"
-          service method (length request-bytes))
+  (format *error-output* "SERVER: Calling handler service=~A method=~A rpc-type=~A request-len=~D~%"
+          service method rpc-type (length request-bytes))
 
   (handler-case
-      (progn
-        ;; Call handler
-        (multiple-value-bind (response-bytes status-code status-message response-metadata)
-            (handle-unary handler service method request-bytes context)
+      (ecase rpc-type
+        (:unary
+         ;; Unary RPC - call handler and send single response
+         (multiple-value-bind (response-bytes status-code status-message response-metadata)
+             (handle-unary handler service method request-bytes context)
 
-          (format *error-output* "SERVER: Handler returned status=~D response-len=~D~%"
-                  status-code (if response-bytes (length response-bytes) 0))
+           (format *error-output* "SERVER: Handler returned status=~D response-len=~D~%"
+                   status-code (if response-bytes (length response-bytes) 0))
 
-          ;; Send response
-          (server-send-response connection stream-id
-                               response-bytes status-code status-message
-                               response-metadata)))
+           ;; Send response
+           (server-send-response connection stream-id
+                                response-bytes status-code status-message
+                                response-metadata)))
+
+        ((:client-streaming :server-streaming :bidirectional)
+         ;; Streaming RPC - not yet implemented
+         (format *error-output* "SERVER: Streaming RPCs not yet implemented: ~A~%" rpc-type)
+         (server-send-response connection stream-id
+                              nil +grpc-status-unimplemented+
+                              (format nil "~A RPC not yet implemented" rpc-type)
+                              nil)))
+
     (error (e)
       ;; Error in handler - send INTERNAL error
       (format *error-output* "SERVER: Handler error: ~A~%" e)
