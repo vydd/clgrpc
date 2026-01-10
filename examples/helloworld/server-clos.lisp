@@ -32,12 +32,12 @@
 ;; Define the SayHello method
 ;; :method-name defaults to "SayHello" (CamelCase of say-hello)
 ;; :rpc-type defaults to :unary
+;; context is omitted since we don't need it for simple unary RPC
 (defgrpc-method say-hello ((service greeter-service)
-                           (request hello-request)
-                           context)
+                           (request hello-request))
   (:documentation "Sends a greeting")
 
-  (declare (ignore context))
+  (declare (ignore service))
 
   ;; Get the name from the request
   (let ((name (hello-request-name request)))

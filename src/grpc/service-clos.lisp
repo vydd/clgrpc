@@ -127,7 +127,11 @@
 (defmacro defgrpc-method (lisp-name lambda-list &body body)
   "Define a gRPC method.
 
-  Lambda list must be ((service service-class) (request request-class) context)
+  Lambda list supports two forms:
+    1. ((service service-class) (request request-class))           - Simple form, context auto-ignored
+    2. ((service service-class) (request request-class) context)   - Full form with context access
+
+  Service is required for CLOS dispatch. Context is optional and auto-ignored when not in lambda list.
 
   Body can start with optional keyword options:
     :method-name \"GrpcMethodName\"  (optional, defaults to CamelCase of lisp-name)
@@ -136,31 +140,69 @@
     :documentation \"Method documentation\"
 
   Examples:
-    ;; Minimal - method-name defaults to \"SayHello\", rpc-type defaults to :unary
+    ;; Simple - no context needed
     (defgrpc-method say-hello ((service greeter-service)
-                               (request hello-request)
-                               context)
+                               (request hello-request))
       (make-hello-reply :message (format nil \"Hello ~A!\" (hello-request-name request))))
 
-    ;; Explicit
-    (defgrpc-method say-hello ((service greeter-service)
-                               (request hello-request)
-                               context)
-      (:method-name \"SayHello\")
-      (:rpc-type :unary)
-      (make-hello-reply :message (format nil \"Hello ~A!\" (hello-request-name request))))"
+    ;; With context (for streaming, metadata, etc.)
+    (defgrpc-method list-features ((service route-guide-service)
+                                   (request rectangle)
+                                   context)
+      (:rpc-type :server-streaming)
+      (let ((stream (get-stream context)))
+        (server-stream-send stream ...)
+        (values +grpc-status-ok+ nil nil)))"
 
-  ;; Parse lambda list
-  (unless (and (= (length lambda-list) 3)
-               (listp (first lambda-list))
-               (listp (second lambda-list)))
-    (error "Lambda list must be ((service service-class) (request request-class) context)"))
+  ;; Parse lambda list - detect which form is being used
+  (let* ((lambda-length (length lambda-list))
+         (service-spec nil)
+         (request-spec nil)
+         (service-binding nil)
+         (service-class nil)
+         (request-binding nil)
+         (request-class nil)
+         (context-binding nil)
+         (ignored-params nil))
 
-  (let* ((service-binding (first (first lambda-list)))
-         (service-class (second (first lambda-list)))
-         (request-binding (first (second lambda-list)))
-         (request-class (second (second lambda-list)))
-         (context-binding (third lambda-list)))
+    (cond
+      ;; Form 1: ((service service-class) (request request-class))
+      ((and (= lambda-length 2)
+            (listp (first lambda-list))
+            (listp (second lambda-list)))
+       (setf service-spec (first lambda-list)
+             service-binding (first service-spec)
+             service-class (second service-spec)
+             request-spec (second lambda-list)
+             request-binding (first request-spec)
+             request-class (second request-spec)
+             context-binding (gensym "CONTEXT")
+             ignored-params (list context-binding)))
+
+      ;; Form 2: ((service service-class) (request request-class) context)
+      ((and (= lambda-length 3)
+            (listp (first lambda-list))
+            (listp (second lambda-list))
+            (symbolp (third lambda-list)))
+       (setf service-spec (first lambda-list)
+             service-binding (first service-spec)
+             service-class (second service-spec)
+             request-spec (second lambda-list)
+             request-binding (first request-spec)
+             request-class (second request-spec)
+             context-binding (third lambda-list)
+             ignored-params nil))
+
+      (t
+       (error "Lambda list must be one of:~%~
+               ((service service-class) (request request-class))~%~
+               ((service service-class) (request request-class) context)")))
+
+    ;; Validate parsed specs
+    (unless (and request-binding request-class)
+      (error "Invalid request specification in lambda list"))
+    (unless (and service-binding service-class)
+      (error "Invalid service specification in lambda list"))
 
     ;; Parse keyword options from body
     (let ((grpc-name nil)
@@ -204,6 +246,9 @@
                                 (,request-binding ,request-class)
                                 ,context-binding)
            ,@(when doc `(,doc))
+           ;; Auto-ignore unused parameters
+           ,@(when ignored-params
+               `((declare (ignore ,@ignored-params))))
            ,@method-body)
 
          ;; Register method metadata with the service class
