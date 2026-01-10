@@ -116,7 +116,7 @@
   (declare (ignore service-name context))
   (cond
     ((string= method-name "GetFeature")
-     (let ((point (routeguide:decode-point request-bytes)))
+     (let ((point (proto-deserialize 'routeguide:point request-bytes)))
        (format *error-output* "GetFeature: lat=~D lon=~D~%"
                (routeguide:point-latitude point)
                (routeguide:point-longitude point))
@@ -127,10 +127,10 @@
                                             (routeguide:feature-location f)))
                               *route-features*)))
          (if feature
-             (values (routeguide:encode-feature feature)
+             (values (proto-serialize feature)
                      +grpc-status-ok+ nil nil)
              ;; No feature found - return unnamed feature
-             (values (routeguide:encode-feature
+             (values (proto-serialize
                       (routeguide:make-feature :name "" :location point))
                      +grpc-status-ok+ nil nil)))))
 
@@ -146,7 +146,7 @@
   (declare (ignore service-name context))
   (cond
     ((string= method-name "ListFeatures")
-     (let ((rect (routeguide:decode-rectangle request-bytes)))
+     (let ((rect (proto-deserialize 'routeguide:rectangle request-bytes)))
        (format *error-output* "ListFeatures: rectangle~%")
 
        ;; Stream all features in the rectangle
@@ -155,7 +155,7 @@
            (format *error-output* "  Sending: ~A~%"
                    (routeguide:feature-name feature))
            (server-stream-send stream
-                              (routeguide:encode-feature feature))))
+                              (proto-serialize feature))))
 
        (values +grpc-status-ok+ nil nil)))
 
@@ -182,7 +182,7 @@
        ;; Receive all points
        (loop for msg-bytes = (server-stream-recv stream)
              while msg-bytes
-             do (let ((point (routeguide:decode-point msg-bytes)))
+             do (let ((point (proto-deserialize 'routeguide:point msg-bytes)))
                   (incf point-count)
                   (format *error-output* "  Point ~D: lat=~D lon=~D~%"
                           point-count
@@ -213,7 +213,7 @@
                          :feature-count feature-count
                          :distance distance
                          :elapsed-time elapsed-seconds)))
-           (values (routeguide:encode-route-summary summary)
+           (values (proto-serialize summary)
                    +grpc-status-ok+ nil nil)))))
 
     (t
@@ -233,7 +233,7 @@
      ;; Receive notes and send back previous notes at same location
      (loop for msg-bytes = (server-stream-recv stream)
            while msg-bytes
-           do (let ((note (routeguide:decode-route-note msg-bytes)))
+           do (let ((note (proto-deserialize 'routeguide:route-note msg-bytes)))
                 (format *error-output* "  Received note at lat=~D lon=~D: ~A~%"
                         (routeguide:point-latitude
                          (routeguide:route-note-location note))
@@ -249,7 +249,7 @@
                     (format *error-output* "    Sending previous note: ~A~%"
                             (routeguide:route-note-message prev-note))
                     (server-stream-send stream
-                                       (routeguide:encode-route-note prev-note)))
+                                       (proto-serialize prev-note)))
 
                   ;; Store this note for future queries
                   (push note (gethash key *route-notes*)))))

@@ -46,10 +46,10 @@
     (multiple-value-bind (response-bytes status status-message)
         (call-unary channel
                    "routeguide.RouteGuide" "GetFeature"
-                   (routeguide:encode-point point))
+                   (proto-serialize point))
 
       (if (= status clgrpc.grpc:+grpc-status-ok+)
-          (let ((feature (routeguide:decode-feature response-bytes)))
+          (let ((feature (proto-deserialize 'routeguide:feature response-bytes)))
             (if (> (length (routeguide:feature-name feature)) 0)
                 (format t "Found feature: ~A~%"
                         (routeguide:feature-name feature))
@@ -73,7 +73,7 @@
     (multiple-value-bind (stream status status-message)
         (call-server-streaming channel
                               "routeguide.RouteGuide" "ListFeatures"
-                              (routeguide:encode-rectangle rect))
+                              (proto-serialize rect))
 
       (if (null stream)
           (format t "Error: ~A (~D)~%" status-message status)
@@ -82,7 +82,7 @@
             (let ((count 0))
               (loop for msg-bytes = (client-stream-recv stream)
                     while msg-bytes
-                    do (let ((feature (routeguide:decode-feature msg-bytes)))
+                    do (let ((feature (proto-deserialize 'routeguide:feature msg-bytes)))
                          (incf count)
                          (format t "  ~D. ~A~%"
                                  count
@@ -116,14 +116,14 @@
                       (routeguide:point-latitude point)
                       (routeguide:point-longitude point))
               (client-stream-send stream
-                                 (routeguide:encode-point point)))
+                                 (proto-serialize point)))
 
             ;; Close and get response
             (multiple-value-bind (response-bytes final-status final-message)
                 (client-stream-close-and-recv stream)
 
               (if (= final-status clgrpc.grpc:+grpc-status-ok+)
-                  (let ((summary (routeguide:decode-route-summary response-bytes)))
+                  (let ((summary (proto-deserialize 'routeguide:route-summary response-bytes)))
                     (format t "~%Route summary:~%")
                     (format t "  Points: ~D~%"
                             (routeguide:route-summary-point-count summary))
@@ -176,7 +176,7 @@
               (format t "~%Sending note: ~A~%"
                       (routeguide:route-note-message note))
               (client-stream-send stream
-                                 (routeguide:encode-route-note note))
+                                 (proto-serialize note))
 
               ;; Wait a bit for responses
               (sleep 0.1)
@@ -184,7 +184,7 @@
               ;; Receive any responses
               (loop for msg-bytes = (client-stream-recv stream :timeout-ms 100)
                     while msg-bytes
-                    do (let ((received-note (routeguide:decode-route-note msg-bytes)))
+                    do (let ((received-note (proto-deserialize 'routeguide:route-note msg-bytes)))
                          (format t "  Got note: ~A~%"
                                  (routeguide:route-note-message received-note)))))
 
