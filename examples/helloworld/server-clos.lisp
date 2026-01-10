@@ -30,11 +30,11 @@
   (:documentation "The greeting service definition"))
 
 ;; Define the SayHello method
+;; :method-name defaults to "SayHello" (CamelCase of say-hello)
+;; :rpc-type defaults to :unary
 (defgrpc-method say-hello ((service greeter-service)
                            (request hello-request)
                            context)
-  (:method-name "SayHello")
-  (:rpc-type :unary)
   (:documentation "Sends a greeting")
 
   (declare (ignore context))

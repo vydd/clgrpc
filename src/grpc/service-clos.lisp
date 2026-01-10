@@ -100,6 +100,28 @@
              methods)
     (nreverse result)))
 
+;;; Helper: Convert kebab-case to CamelCase
+
+(defun kebab-to-camel-case (symbol)
+  "Convert a kebab-case symbol to CamelCase string.
+
+   Examples:
+     say-hello → SayHello
+     get-feature → GetFeature
+     list-features → ListFeatures"
+  (let ((name (string-downcase (symbol-name symbol))))
+    (with-output-to-string (out)
+      (loop with capitalize-next = t
+            for char across name
+            do (cond
+                 ((char= char #\-)
+                  (setf capitalize-next t))
+                 (capitalize-next
+                  (write-char (char-upcase char) out)
+                  (setf capitalize-next nil))
+                 (t
+                  (write-char char out)))))))
+
 ;;; Method Definition Macro
 
 (defmacro defgrpc-method (lisp-name lambda-list &body body)
@@ -107,13 +129,20 @@
 
   Lambda list must be ((service service-class) (request request-class) context)
 
-  Body starts with keyword options:
-    :method-name \"GrpcMethodName\"
-    :rpc-type :unary | :client-streaming | :server-streaming | :bidirectional
+  Body can start with optional keyword options:
+    :method-name \"GrpcMethodName\"  (optional, defaults to CamelCase of lisp-name)
+    :rpc-type :unary | :client-streaming | :server-streaming | :bidirectional (default: :unary)
     :response-type response-class  (optional, inferred for unary/server-streaming)
     :documentation \"Method documentation\"
 
-  Example:
+  Examples:
+    ;; Minimal - method-name defaults to \"SayHello\", rpc-type defaults to :unary
+    (defgrpc-method say-hello ((service greeter-service)
+                               (request hello-request)
+                               context)
+      (make-hello-reply :message (format nil \"Hello ~A!\" (hello-request-name request))))
+
+    ;; Explicit
     (defgrpc-method say-hello ((service greeter-service)
                                (request hello-request)
                                context)
@@ -155,9 +184,11 @@
 
       (setf method-body (nreverse method-body))
 
-      ;; Validate
+      ;; Apply defaults
       (unless grpc-name
-        (error "defgrpc-method ~A: :method-name is required" lisp-name))
+        (setf grpc-name (kebab-to-camel-case lisp-name)))
+
+      ;; Validate
       (unless (member rpc-type '(:unary :client-streaming :server-streaming :bidirectional))
         (error "defgrpc-method ~A: invalid :rpc-type ~A" lisp-name rpc-type))
 
