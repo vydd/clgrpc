@@ -1,10 +1,14 @@
 ;;;; run-tests.lisp - Script to load dependencies and run tests
 
-;; Load Quicklisp
-(load "~/quicklisp/setup.lisp" :if-does-not-exist nil)
+;; Load Quicklisp (check both .quicklisp and quicklisp directories)
+(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
+(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
+  (when (probe-file quicklisp-init)
+    (load quicklisp-init)))
 
-;; Install dependencies if needed (Phase 1 only needs these)
-;; Note: cl-protobufs will be added when available - not in Quicklisp
+;; Install dependencies if needed
 (ql:quickload '(:cl+ssl :usocket :bordeaux-threads
                 :alexandria :trivial-gray-streams :fast-io :babel :fiveam)
               :silent t)

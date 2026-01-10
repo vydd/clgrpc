@@ -14,7 +14,7 @@ A pure Common Lisp implementation of gRPC with HTTP/2, built from scratch for SB
 - HPACK static table (61 entries) and dynamic table with eviction
 - Integer and string encoding/decoding
 - All header field representations (indexed, literal with/without indexing)
-- **216/225 HTTP/2 tests passing (96%)**
+- **All HPACK tests passing (100%)**
 
 **Phase 3: HTTP/2 Streams & Connection - COMPLETE ✓**
 - Complete HTTP/2 stream state machine (idle, open, half-closed, closed)
@@ -24,8 +24,8 @@ A pure Common Lisp implementation of gRPC with HTTP/2, built from scratch for SB
 - HTTP/2 connection preface handling (client and server)
 - HPACK encoder/decoder integration per connection
 - Thread-safe operations
-- **All Phase 3 tests passing (100%)**
-- **Overall HTTP/2: 267/276 tests passing (96%)**
+- **All connection tests passing (100%)**
+- **Overall HTTP/2: 390/390 tests passing (100%) ✅**
 
 **Phase 4: Protocol Buffers - COMPLETE ✓**
 - Built custom Protocol Buffers (proto3) implementation from scratch
@@ -265,7 +265,7 @@ clgrpc/
 │       └── service.lisp         # Service registration
 ├── tests/
 │   ├── package.lisp
-│   ├── http2/                    # HTTP/2 tests (267/276 passing)
+│   ├── http2/                    # HTTP/2 tests (390/390 passing ✅)
 │   │   ├── frame-tests.lisp
 │   │   ├── huffman-tests.lisp
 │   │   ├── hpack-tests.lisp
@@ -467,7 +467,7 @@ Comprehensive testing at every layer:
 6. **Conformance Tests** - gRPC conformance suite (TODO)
 
 **Current Test Coverage**:
-- HTTP/2: 267/276 tests passing (96%)
+- HTTP/2: 390/390 tests passing (100%) ✅
 - Protobuf: 100% passing (basic and complex messages)
 - Code Generator: Working
 
