@@ -345,6 +345,7 @@
 
     (format *error-output* "SERVER: Processing complete request stream=~D data-len=~D~%"
             stream-id (if request-data (length request-data) 0))
+    (format *error-output* "SERVER: Headers: ~S~%" headers)
 
     ;; Extract gRPC message from HTTP/2 DATA payload
     (let ((request-bytes
@@ -357,8 +358,9 @@
                 ;; No data - empty request
                 (make-byte-array 0))))
 
-      ;; Route to handler
-      (let ((path (cdr (assoc ":path" headers :test #'string=))))
+      ;; Route to handler (path can be keyword :PATH or string ":path")
+      (let ((path (or (cdr (assoc :path headers))
+                      (cdr (assoc ":path" headers :test #'string=)))))
         (multiple-value-bind (handler service method)
             (route-request (grpc-server-router server) path)
 
