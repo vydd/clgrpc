@@ -46,6 +46,7 @@
      (:file "protocol")
      (:file "protobuf-simple")
      (:file "proto-clos" :depends-on ("protobuf-simple"))
+     (:file "service-clos" :depends-on ("proto-clos"))
      (:file "protobuf" :depends-on ("protobuf-simple"))
      (:file "protobuf-codegen" :depends-on ("protobuf-simple"))
      (:file "reflection" :depends-on ("protobuf-simple"))
@@ -69,7 +70,7 @@
     :components
     ((:file "handler")
      (:file "router")
-     (:file "service")
+     ;; (:file "service")  ; Replaced by CLOS-based service-clos in grpc module
      (:file "streaming")
      (:file "reflection-service")
      (:file "server"))))

@@ -426,6 +426,22 @@
    #:proto-serialize-grpc
    #:proto-deserialize-grpc
 
+   ;; CLOS-based Service API
+   #:grpc-service
+   #:grpc-service-metaclass
+   #:defgrpc-method
+   #:get-service-name
+   #:get-service-package
+   #:grpc-method-info
+   #:grpc-method-info-lisp-name
+   #:grpc-method-info-grpc-name
+   #:grpc-method-info-rpc-type
+   #:grpc-method-info-request-type
+   #:grpc-method-info-response-type
+   #:list-grpc-methods
+   #:find-grpc-method
+   #:find-grpc-method-by-name
+
    ;; Low-level Protobuf Wire Format
    ;; Wire types
    #:+wire-type-varint+
