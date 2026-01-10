@@ -405,7 +405,11 @@
    ;; Reflection Protocol
    #:encode-reflection-request-list-services
    #:decode-reflection-request
-   #:encode-reflection-response-list-services))
+   #:encode-reflection-response-list-services
+
+   ;; Protobuf Code Generation
+   #:compile-proto-file
+   #:generate-code-from-proto))
 
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")

@@ -45,6 +45,7 @@
      (:file "protocol")
      (:file "protobuf-simple")
      (:file "protobuf" :depends-on ("protobuf-simple"))
+     (:file "protobuf-codegen" :depends-on ("protobuf-simple"))
      (:file "reflection" :depends-on ("protobuf-simple"))
      (:file "helloworld")))
 
