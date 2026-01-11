@@ -99,7 +99,8 @@
                (multiple-value-bind (message-bytes compressed total-read)
                    (decode-grpc-message response-data)
                  (declare (ignore compressed total-read))
-                 message-bytes)))
+                 ;; Return response bytes, status, and status message
+                 (values message-bytes status status-message))))
 
         ;; Cleanup: unregister call from connection
         (when (grpc-call-stream-id call)
