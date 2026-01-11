@@ -2,18 +2,21 @@
 
 (in-package #:clgrpc.http2)
 
-(defun write-frame-to-stream (frame buffered-socket)
+(defun write-frame-to-stream (frame buffered-socket &key (flush t))
   "Write HTTP/2 frame to buffered socket.
 
-   Uses buffered I/O from transport layer for efficiency."
+   Uses buffered I/O from transport layer for efficiency.
+   Args:
+     flush: If true (default), flush immediately. Set to nil to batch writes."
   (let ((encoded (encode-frame frame)))
     (debug-log "SEND: type=~D stream=~D len=~D flags=~D bytes=~{~2,'0X ~}~%"
                (frame-type frame) (frame-stream-id frame) (frame-length frame) (frame-flags frame)
                (coerce encoded 'list))
-    ;; Write to buffer (may not flush immediately)
+    ;; Write to buffer
     (clgrpc.transport:buffered-write-bytes buffered-socket encoded)
-    ;; Flush to ensure frame is sent
-    (clgrpc.transport:buffered-flush buffered-socket)))
+    ;; Flush if requested
+    (when flush
+      (clgrpc.transport:buffered-flush buffered-socket))))
 
 (defun write-frames-to-stream (frames buffered-socket)
   "Write multiple HTTP/2 frames to buffered socket.

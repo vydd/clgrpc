@@ -134,6 +134,16 @@
 
 ;;; HPACK Table Lookups
 
+(defun denormalize-header-name (name)
+  "Convert pseudo-header strings back to keywords (e.g., \"path\" -> :PATH).
+   Regular headers remain as strings."
+  (if (and (stringp name)
+           (member name '("method" "scheme" "path" "authority") :test #'string=))
+      ;; Pseudo-header: convert to uppercase keyword (intern in :keyword adds the :)
+      (intern (string-upcase name) :keyword)
+      ;; Regular header: keep as string
+      name))
+
 (defun hpack-lookup-index (context index)
   "Lookup header by index (1-based). Returns (name . value) or nil."
   (cond
@@ -146,7 +156,9 @@
      (let ((dynamic-index (- index +hpack-static-table-size+ 1)))
        (when (< dynamic-index (length (hpack-context-dynamic-table context)))
          (let ((entry (aref (hpack-context-dynamic-table context) dynamic-index)))
-           (cons (hpack-entry-name entry) (hpack-entry-value entry))))))))
+           ;; Convert pseudo-headers back to keywords
+           (cons (denormalize-header-name (hpack-entry-name entry))
+                 (hpack-entry-value entry))))))))
 
 (defun hpack-find-index (context name value)
   "Find index of exact header match. Returns index or nil.

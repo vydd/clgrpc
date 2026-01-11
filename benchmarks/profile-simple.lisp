@@ -1,72 +1,47 @@
-;;;; profile-simple.lisp - Minimal profiler for existing benchmark
+;;;; profile-simple.lisp - Simple profiling setup
 
-;; Load the statistical profiler
-(require 'sb-sprof)
+(ql:quickload :clgrpc-examples :silent t)
+(require :sb-sprof)
 
-;; Load the working benchmark
-(load (merge-pathnames "benchmark-cl.lisp" *load-truename*))
+(in-package :clgrpc-examples)
 
-;; Override the run-all-benchmarks to just run one quick test with profiling
-(in-package #:clgrpc.client)
+;; Load route guide database
+(defparameter *route-features-clos*
+  (routeguide-clos-load-features
+   #P"/home/vydd/Code/clgrpc/examples/routeguide/route_guide_db.json"))
 
-(defun profile-single-test ()
-  "Run a single benchmark test with profiling"
-  (format t "~%~%Starting profiled benchmark...~%")
-  (format t "Will run 10 clients for 5 seconds~%~%")
+;; Create and start server on port 50055
+(defparameter *test-server* (make-server :port 50055))
+(let ((route-guide (make-instance 'route-guide-service-clos)))
+  (register-service (grpc-server-router *test-server*) route-guide))
 
-  ;; Make sure server is running (it should be started by benchmark-cl.lisp)
-  (sleep 2)
+(format t "Starting server on port 50055...~%")
+(start-server *test-server*)
+(format t "Server ready!~%~%")
 
-  ;; Reset and start profiler
-  (sb-sprof:reset)
-  (sb-sprof:start-profiling :max-samples 100000
-                            :mode :cpu
-                            :sample-interval 0.001)
+(format t "Server will run for 8 seconds with profiling enabled.~%")
+(format t "Run your test client now!~%~%")
 
-  ;; Run the benchmark
-  (let* ((num-clients 10)
-         (duration 5)
-         (threads '())
-         (results-lock (bt:make-lock))
-         (results-list '())
-         (stop-flag nil))
+;; Start profiling
+(sb-sprof:start-profiling :max-samples 1000000
+                          :mode :cpu
+                          :sample-interval 0.001
+                          :threads :all)
 
-    ;; Start worker threads
-    (dotimes (i num-clients)
-      (push (bt:make-thread
-             (lambda ()
-               (benchmark-unary-worker i duration stop-flag results-lock results-list))
-             :name (format nil "Worker-~D" i))
-            threads))
+;; Wait for requests
+(sleep 8)
 
-    ;; Wait for completion
-    (mapc #'bt:join-thread threads)
+;; Stop profiling
+(sb-sprof:stop-profiling)
 
-    ;; Stop profiling
-    (sb-sprof:stop-profiling)
+(format t "~%Profiling complete. Generating report...~%~%")
 
-    ;; Calculate results
-    (let ((total-requests 0)
-          (total-errors 0))
-      (dolist (result results-list)
-        (incf total-requests (getf result :requests))
-        (incf total-errors (getf result :errors)))
+;; Generate report to stdout
+(sb-sprof:report :type :flat :max 50)
 
-      ;; Print results
-      (format t "~%~%=== Benchmark Results ===~%")
-      (format t "Total requests: ~D~%" total-requests)
-      (format t "Total errors: ~D~%" total-errors)
-      (format t "Requests/second: ~,1F~%~%" (/ total-requests duration))
+(format t "~%~%")
 
-      ;; Print profiling report
-      (format t "~%~%=== PROFILING REPORT (Top 50 functions by CPU time) ===~%~%")
-      (sb-sprof:report :type :flat :max 50)
-
-      (format t "~%~%=== CALL GRAPH ===~%~%")
-      (sb-sprof:report :type :graph :max 30))))
-
-;; Run it
-(profile-single-test)
-
-;; Exit
+;; Stop server and exit
+(stop-server *test-server*)
+(format t "~%Done!~%")
 (sb-ext:exit :code 0)

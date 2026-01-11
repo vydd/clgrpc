@@ -645,37 +645,45 @@
      status-code: gRPC status code
      status-message: Status message (or nil)
      response-metadata: Response metadata (or nil)"
-  (let ((encoder-ctx (http2-connection-hpack-encoder connection)))
+  (let ((encoder-ctx (http2-connection-hpack-encoder connection))
+        (frames nil))
 
-    ;; Send response headers
+    ;; Build response headers frame
     (let ((headers (encode-grpc-response-headers :metadata response-metadata)))
       (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
-        (let ((headers-frame (make-http2-frame
-                              :length (length headers-bytes)
-                              :type +frame-type-headers+
-                              :flags +flag-end-headers+
-                              :stream-id stream-id
-                              :payload headers-bytes)))
-          (write-frame-to-stream headers-frame (http2-connection-socket connection)))))
+        (push (make-http2-frame
+               :length (length headers-bytes)
+               :type +frame-type-headers+
+               :flags +flag-end-headers+
+               :stream-id stream-id
+               :payload headers-bytes)
+              frames)))
 
-    ;; Send DATA frame if we have response
+    ;; Build DATA frame if we have response
     (when response-bytes
       (let ((grpc-message (encode-grpc-message response-bytes)))
-        (let ((data-frame (make-http2-frame
-                           :length (length grpc-message)
-                           :type +frame-type-data+
-                           :flags 0
-                           :stream-id stream-id
-                           :payload grpc-message)))
-          (write-frame-to-stream data-frame (http2-connection-socket connection)))))
+        (push (make-http2-frame
+               :length (length grpc-message)
+               :type +frame-type-data+
+               :flags 0
+               :stream-id stream-id
+               :payload grpc-message)
+              frames)))
 
-    ;; Send trailers with status
+    ;; Build trailers frame with status
     (let ((trailers (encode-grpc-trailers status-code status-message)))
       (let ((trailers-bytes (hpack-encode-headers encoder-ctx trailers)))
-        (let ((trailers-frame (make-http2-frame
-                               :length (length trailers-bytes)
-                               :type +frame-type-headers+
-                               :flags (logior +flag-end-headers+ +flag-end-stream+)
-                               :stream-id stream-id
-                               :payload trailers-bytes)))
-          (write-frame-to-stream trailers-frame (http2-connection-socket connection)))))))
+        (push (make-http2-frame
+               :length (length trailers-bytes)
+               :type +frame-type-headers+
+               :flags (logior +flag-end-headers+ +flag-end-stream+)
+               :stream-id stream-id
+               :payload trailers-bytes)
+              frames)))
+
+    ;; Send all frames in one batch with single flush
+    (let ((socket (http2-connection-socket connection)))
+      (dolist (frame (nreverse frames))
+        (write-frame-to-stream frame socket :flush nil))
+      ;; Single flush for all frames
+      (clgrpc.transport:buffered-flush socket))))

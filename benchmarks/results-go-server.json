@@ -1,0 +1,23 @@
+[
+  {
+    "rpc_type": "unary",
+    "num_clients": 1,
+    "requests_per_second": 8860.091854135657,
+    "total_requests": 44306,
+    "errors": 0
+  },
+  {
+    "rpc_type": "unary",
+    "num_clients": 10,
+    "requests_per_second": 38031.1873347323,
+    "total_requests": 190208,
+    "errors": 0
+  },
+  {
+    "rpc_type": "unary",
+    "num_clients": 100,
+    "requests_per_second": 63393.71279188697,
+    "total_requests": 317950,
+    "errors": 0
+  }
+]
