@@ -12,8 +12,11 @@
   (router nil :type (or null grpc-router))
   (listener-socket nil)
   (running nil :type boolean)
+  (shutting-down nil :type boolean)         ; Graceful shutdown in progress
+  (shutdown-deadline 0 :type integer)       ; When to force-close (universal-time)
   (connections (make-array 0 :adjustable t :fill-pointer 0))
   (lock (bordeaux-threads:make-lock "server-lock"))
+  (shutdown-cv (bordeaux-threads:make-condition-variable :name "shutdown-cv"))
   (listener-thread nil))
 
 ;;; Per-stream request state
@@ -72,32 +75,103 @@
 
   (format t "gRPC server listening on port ~D~%" (grpc-server-port server)))
 
-(defun stop-server (server)
-  "Stop the gRPC server.
+(defun stop-server (server &key (timeout 30))
+  "Gracefully stop the gRPC server.
 
    Args:
      server: grpc-server
+     timeout: Maximum seconds to wait for active requests to complete (default: 30)
+
+   Graceful shutdown process:
+     1. Stop accepting new connections
+     2. Send GOAWAY to all existing connections (no new streams)
+     3. Wait for active streams to complete (up to timeout)
+     4. Force-close remaining connections after timeout
 
    Side effects:
      Closes all connections
      Stops listener thread"
+  (format t "~%Initiating graceful shutdown (timeout: ~D seconds)...~%" timeout)
+
+  ;; Phase 1: Stop accepting new connections
   (bordeaux-threads:with-lock-held ((grpc-server-lock server))
     (unless (grpc-server-running server)
+      (format t "Server is not running~%")
       (return-from stop-server nil))
 
     (setf (grpc-server-running server) nil)
+    (setf (grpc-server-shutting-down server) t)
+    (setf (grpc-server-shutdown-deadline server)
+          (+ (get-universal-time) timeout))
 
-    ;; Close all client connections
-    (loop for conn across (grpc-server-connections server)
-          do (ignore-errors (connection-close conn)))
-    (setf (fill-pointer (grpc-server-connections server)) 0)
-
-    ;; Close listener socket
+    ;; Close listener socket (stop accepting new connections)
     (when (grpc-server-listener-socket server)
       (ignore-errors (usocket:socket-close (grpc-server-listener-socket server)))
-      (setf (grpc-server-listener-socket server) nil)))
+      (setf (grpc-server-listener-socket server) nil)
+      (format t "✓ Stopped accepting new connections~%")))
 
-  (format t "gRPC server stopped~%"))
+  ;; Phase 2: Send GOAWAY to all connections
+  (let ((connections (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+                       (coerce (grpc-server-connections server) 'list))))
+    (format t "✓ Sending GOAWAY to ~D connection(s)...~%" (length connections))
+    (loop for conn in connections
+          do (handler-case
+                 (progn
+                   (let ((last-stream-id (http2-connection-last-stream-id conn)))
+                     ;; Send GOAWAY with NO_ERROR
+                     (connection-send-goaway conn last-stream-id 0
+                                           (babel:string-to-octets "Server shutting down"))))
+               (error (e)
+                 (debug-log "Error sending GOAWAY: ~A~%" e)))))
+
+  ;; Phase 3: Wait for active streams to complete (with timeout)
+  (let ((start-time (get-universal-time))
+        (deadline (grpc-server-shutdown-deadline server)))
+    (loop
+      ;; Count active streams across all connections
+      (let ((active-count (count-active-streams server)))
+        (when (zerop active-count)
+          (format t "✓ All active streams completed~%")
+          (return))
+
+        ;; Check if we've exceeded timeout
+        (when (>= (get-universal-time) deadline)
+          (format t "⚠ Timeout reached with ~D active stream(s) remaining~%" active-count)
+          (return))
+
+        ;; Print progress
+        (let ((elapsed (- (get-universal-time) start-time)))
+          (when (zerop (mod elapsed 5))  ; Every 5 seconds
+            (format t "  Waiting for ~D active stream(s)... (~D/~D seconds)~%"
+                    active-count elapsed timeout)))
+
+        ;; Wait a bit before checking again
+        (sleep 0.5))))
+
+  ;; Phase 4: Force-close remaining connections
+  (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+    (let ((conn-count (length (grpc-server-connections server))))
+      (when (> conn-count 0)
+        (format t "✓ Closing ~D remaining connection(s)...~%" conn-count))
+      (loop for conn across (grpc-server-connections server)
+            do (ignore-errors (connection-close conn)))
+      (setf (fill-pointer (grpc-server-connections server)) 0))
+
+    (setf (grpc-server-shutting-down server) nil))
+
+  (format t "✓ Server shutdown complete~%~%"))
+
+(defun count-active-streams (server)
+  "Count total active streams across all connections.
+
+   Args:
+     server: grpc-server
+
+   Returns:
+     Total number of active streams"
+  (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+    (loop for conn across (grpc-server-connections server)
+          sum (hash-table-count (http2-connection-active-calls conn)))))
 
 ;;; Connection Handling
 
@@ -124,6 +198,12 @@
    Args:
      server: grpc-server
      client-socket: tcp-socket from transport layer"
+  ;; Reject new connections during graceful shutdown
+  (when (grpc-server-shutting-down server)
+    (debug-log "Rejecting new connection (server shutting down)~%")
+    (ignore-errors (usocket:socket-close client-socket))
+    (return-from server-handle-connection nil))
+
   ;; Wrap socket with buffering for efficient HTTP/2 frame I/O
   (let ((buffered-socket (clgrpc.transport:wrap-socket-with-buffer client-socket)))
 

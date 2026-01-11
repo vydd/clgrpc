@@ -80,6 +80,29 @@
                (connection-close conn)))
     (setf (fill-pointer (connection-pool-connections pool)) 0)))
 
+(defun pool-cleanup-closed (pool)
+  "Remove closed connections from pool (housekeeping).
+
+   Args:
+     pool: connection-pool structure
+
+   Returns:
+     Number of connections removed"
+  (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
+    (let ((original-count (length (connection-pool-connections pool)))
+          (active-connections (make-array 0 :adjustable t :fill-pointer 0)))
+
+      ;; Keep only open connections
+      (loop for conn across (connection-pool-connections pool)
+            when (not (connection-is-closed-p conn))
+            do (vector-push-extend conn active-connections))
+
+      ;; Replace connections array
+      (setf (connection-pool-connections pool) active-connections)
+
+      ;; Return number removed
+      (- original-count (length active-connections)))))
+
 ;;; HTTP/2 Connection Creation
 
 (defun create-http2-connection (target &key (secure t))
