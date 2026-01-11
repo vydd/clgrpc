@@ -109,13 +109,19 @@
            (stream-id (grpc-server-stream-stream-id stream))
            (grpc-message (encode-grpc-message message-bytes)))
 
-      (let ((data-frame (make-http2-frame
-                         :length (length grpc-message)
-                         :type +frame-type-data+
-                         :flags 0  ; No END_STREAM
-                         :stream-id stream-id
-                         :payload grpc-message)))
-        (write-frame-to-stream data-frame (http2-connection-socket conn))))))
+      ;; Need connection write lock for socket writes
+      ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+      (bt:with-lock-held ((http2-connection-write-lock conn))
+        (let ((data-frame (make-http2-frame
+                           :length (length grpc-message)
+                           :type +frame-type-data+
+                           :flags 0  ; No END_STREAM
+                           :stream-id stream-id
+                           :payload grpc-message)))
+          (write-frame-to-stream data-frame (http2-connection-socket conn) :flush nil)))
+
+      ;; Flush outside the write lock
+      (clgrpc.transport:buffered-flush (http2-connection-socket conn)))))
 
 ;;; Internal: Called by server frame handlers to add messages to queue
 
@@ -150,18 +156,24 @@
       (return-from server-stream-close nil))
 
     (let* ((conn (grpc-server-stream-connection stream))
-           (stream-id (grpc-server-stream-stream-id stream))
-           (encoder-ctx (http2-connection-hpack-encoder conn)))
+           (stream-id (grpc-server-stream-stream-id stream)))
 
-      ;; Send trailers with status
-      (let ((trailers (encode-grpc-trailers status-code status-message)))
-        (let ((trailers-bytes (hpack-encode-headers encoder-ctx trailers)))
-          (let ((trailers-frame (make-http2-frame
-                                 :length (length trailers-bytes)
-                                 :type +frame-type-headers+
-                                 :flags (logior +flag-end-headers+ +flag-end-stream+)
-                                 :stream-id stream-id
-                                 :payload trailers-bytes)))
-            (write-frame-to-stream trailers-frame (http2-connection-socket conn)))))
+      ;; CRITICAL: Need connection write lock for HPACK encoder and socket writes
+      ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+      (bt:with-lock-held ((http2-connection-write-lock conn))
+        (let ((encoder-ctx (http2-connection-hpack-encoder conn)))
+          ;; Send trailers with status
+          (let ((trailers (encode-grpc-trailers status-code status-message)))
+            (let ((trailers-bytes (hpack-encode-headers encoder-ctx trailers)))
+              (let ((trailers-frame (make-http2-frame
+                                     :length (length trailers-bytes)
+                                     :type +frame-type-headers+
+                                     :flags (logior +flag-end-headers+ +flag-end-stream+)
+                                     :stream-id stream-id
+                                     :payload trailers-bytes)))
+                (write-frame-to-stream trailers-frame (http2-connection-socket conn) :flush nil))))))
+
+      ;; Flush outside the write lock
+      (clgrpc.transport:buffered-flush (http2-connection-socket conn))
 
       (setf (grpc-server-stream-send-closed stream) t))))

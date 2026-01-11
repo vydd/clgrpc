@@ -195,6 +195,7 @@
    #:http2-connection-settings-received
    #:http2-connection-ready-lock
    #:http2-connection-ready-cv
+   #:http2-connection-write-lock
    #:http2-connection-connection-send-window
    #:http2-connection-connection-recv-window
    #:http2-connection-goaway-sent

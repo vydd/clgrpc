@@ -109,21 +109,27 @@
       (setf (gethash stream-id (http2-connection-active-calls conn)) stream)
 
       ;; Build and send HEADERS frame (no END_STREAM for streaming)
-      (let ((headers (encode-grpc-request-headers
-                      (grpc-stream-service stream)
-                      (grpc-stream-method stream)
-                      :authority (grpc-stream-authority stream)
-                      :timeout (grpc-stream-timeout stream)
-                      :metadata (grpc-stream-metadata stream))))
+      ;; Need connection write lock for HPACK encoder and socket writes
+      ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+      (bt:with-lock-held ((http2-connection-write-lock conn))
+        (let ((headers (encode-grpc-request-headers
+                        (grpc-stream-service stream)
+                        (grpc-stream-method stream)
+                        :authority (grpc-stream-authority stream)
+                        :timeout (grpc-stream-timeout stream)
+                        :metadata (grpc-stream-metadata stream))))
 
-        (let ((headers-bytes (hpack-encode-headers hpack-ctx headers)))
-          (let ((headers-frame (make-http2-frame
-                                :length (length headers-bytes)
-                                :type +frame-type-headers+
-                                :flags +flag-end-headers+
-                                :stream-id stream-id
-                                :payload headers-bytes)))
-            (write-frame-to-stream headers-frame (http2-connection-socket conn)))))
+          (let ((headers-bytes (hpack-encode-headers hpack-ctx headers)))
+            (let ((headers-frame (make-http2-frame
+                                  :length (length headers-bytes)
+                                  :type +frame-type-headers+
+                                  :flags +flag-end-headers+
+                                  :stream-id stream-id
+                                  :payload headers-bytes)))
+              (write-frame-to-stream headers-frame (http2-connection-socket conn) :flush nil)))))
+
+      ;; Flush outside the write lock
+      (clgrpc.transport:buffered-flush (http2-connection-socket conn))
 
       (setf (grpc-stream-headers-sent stream) t)
       stream-id)))
@@ -148,13 +154,19 @@
            (stream-id (grpc-stream-stream-id stream))
            (grpc-message (encode-grpc-message message-bytes)))
 
-      (let ((data-frame (make-http2-frame
-                         :length (length grpc-message)
-                         :type +frame-type-data+
-                         :flags 0  ; No END_STREAM
-                         :stream-id stream-id
-                         :payload grpc-message)))
-        (write-frame-to-stream data-frame (http2-connection-socket conn))))))
+      ;; Need connection write lock for socket writes
+      ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+      (bt:with-lock-held ((http2-connection-write-lock conn))
+        (let ((data-frame (make-http2-frame
+                           :length (length grpc-message)
+                           :type +frame-type-data+
+                           :flags 0  ; No END_STREAM
+                           :stream-id stream-id
+                           :payload grpc-message)))
+          (write-frame-to-stream data-frame (http2-connection-socket conn) :flush nil)))
+
+      ;; Flush outside the write lock
+      (clgrpc.transport:buffered-flush (http2-connection-socket conn)))))
 
 (defun stream-close-send (stream)
   "Close the send side of the stream (send END_STREAM).
@@ -171,13 +183,19 @@
     (let* ((conn (grpc-stream-connection stream))
            (stream-id (grpc-stream-stream-id stream)))
 
-      (let ((data-frame (make-http2-frame
-                         :length 0
-                         :type +frame-type-data+
-                         :flags +flag-end-stream+
-                         :stream-id stream-id
-                         :payload (make-byte-array 0))))
-        (write-frame-to-stream data-frame (http2-connection-socket conn))))
+      ;; Need connection write lock for socket writes
+      ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+      (bt:with-lock-held ((http2-connection-write-lock conn))
+        (let ((data-frame (make-http2-frame
+                           :length 0
+                           :type +frame-type-data+
+                           :flags +flag-end-stream+
+                           :stream-id stream-id
+                           :payload (make-byte-array 0))))
+          (write-frame-to-stream data-frame (http2-connection-socket conn) :flush nil)))
+
+      ;; Flush outside the write lock
+      (clgrpc.transport:buffered-flush (http2-connection-socket conn)))
 
     (setf (grpc-stream-send-closed stream) t)))
 

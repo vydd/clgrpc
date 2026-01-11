@@ -57,37 +57,45 @@
     (debug-log "REGISTER CALL: stream=~D~%" stream-id)
     (setf (gethash stream-id (http2-connection-active-calls conn)) call)
 
-    ;; Build request headers
-    (let ((headers (encode-grpc-request-headers
-                    (grpc-call-service call)
-                    (grpc-call-method call)
-                    :authority (grpc-call-authority call)
-                    :timeout (grpc-call-timeout call)
-                    :metadata (grpc-call-metadata call))))
+    ;; CRITICAL: Lock is required because:
+    ;; 1. HPACK encoder has mutable state (dynamic table) shared across threads
+    ;; 2. Socket writes must be atomic to prevent frame interleaving
+    ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+    (bt:with-lock-held ((http2-connection-write-lock conn))
+      ;; Build request headers
+      (let ((headers (encode-grpc-request-headers
+                      (grpc-call-service call)
+                      (grpc-call-method call)
+                      :authority (grpc-call-authority call)
+                      :timeout (grpc-call-timeout call)
+                      :metadata (grpc-call-metadata call))))
 
-      ;; Encode headers with HPACK
-      (let ((headers-bytes (hpack-encode-headers hpack-ctx headers)))
+        ;; Encode headers with HPACK
+        (let ((headers-bytes (hpack-encode-headers hpack-ctx headers)))
 
-        ;; Send HEADERS frame
-        (let ((headers-frame (make-http2-frame
-                              :length (length headers-bytes)
-                              :type +frame-type-headers+
-                              :flags +flag-end-headers+  ; No CONTINUATION for now
-                              :stream-id stream-id
-                              :payload headers-bytes)))
-          (write-frame-to-stream headers-frame (http2-connection-socket conn)))))
+          ;; Send HEADERS frame
+          (let ((headers-frame (make-http2-frame
+                                :length (length headers-bytes)
+                                :type +frame-type-headers+
+                                :flags +flag-end-headers+  ; No CONTINUATION for now
+                                :stream-id stream-id
+                                :payload headers-bytes)))
+            (write-frame-to-stream headers-frame (http2-connection-socket conn) :flush nil))))
 
-    ;; Frame request with gRPC message framing
-    (let ((grpc-message (encode-grpc-message request-bytes)))
+      ;; Frame request with gRPC message framing
+      (let ((grpc-message (encode-grpc-message request-bytes)))
 
-      ;; Send DATA frame with END_STREAM
-      (let ((data-frame (make-http2-frame
-                         :length (length grpc-message)
-                         :type +frame-type-data+
-                         :flags +flag-end-stream+
-                         :stream-id stream-id
-                         :payload grpc-message)))
-        (write-frame-to-stream data-frame (http2-connection-socket conn))))
+        ;; Send DATA frame with END_STREAM
+        (let ((data-frame (make-http2-frame
+                           :length (length grpc-message)
+                           :type +frame-type-data+
+                           :flags +flag-end-stream+
+                           :stream-id stream-id
+                           :payload grpc-message)))
+          (write-frame-to-stream data-frame (http2-connection-socket conn) :flush nil))))
+
+    ;; Flush all frames at once (OUTSIDE the write lock to avoid blocking)
+    (clgrpc.transport:buffered-flush (http2-connection-socket conn))
 
     ;; Update call state
     (setf (grpc-call-request-sent call) t)

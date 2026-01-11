@@ -430,16 +430,21 @@
    Args:
      connection: http2-connection
      stream-id: HTTP/2 stream ID"
-  (let ((encoder-ctx (http2-connection-hpack-encoder connection)))
-    (let ((headers (encode-grpc-response-headers :metadata nil)))
-      (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
-        (let ((headers-frame (make-http2-frame
-                              :length (length headers-bytes)
-                              :type +frame-type-headers+
-                              :flags +flag-end-headers+
-                              :stream-id stream-id
-                              :payload headers-bytes)))
-          (write-frame-to-stream headers-frame (http2-connection-socket connection)))))))
+  ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+  (let ((socket (http2-connection-socket connection)))
+    (bt:with-lock-held ((http2-connection-write-lock connection))
+      (let ((encoder-ctx (http2-connection-hpack-encoder connection)))
+        (let ((headers (encode-grpc-response-headers :metadata nil)))
+          (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
+            (let ((headers-frame (make-http2-frame
+                                  :length (length headers-bytes)
+                                  :type +frame-type-headers+
+                                  :flags +flag-end-headers+
+                                  :stream-id stream-id
+                                  :payload headers-bytes)))
+              (write-frame-to-stream headers-frame socket :flush nil))))))
+    ;; Flush outside the write lock
+    (clgrpc.transport:buffered-flush socket)))
 
 (defun server-handle-streaming-request (handler service method stream context rpc-type)
   "Handle client-streaming or bidirectional streaming gRPC request.
@@ -645,45 +650,51 @@
      status-code: gRPC status code
      status-message: Status message (or nil)
      response-metadata: Response metadata (or nil)"
-  (let ((encoder-ctx (http2-connection-hpack-encoder connection))
-        (frames nil))
+  ;; CRITICAL: Lock is required because:
+  ;; 1. HPACK encoder has mutable state (dynamic table) shared across threads
+  ;; 2. Socket writes must be atomic to prevent frame interleaving
+  ;; NOTE: Flush happens OUTSIDE lock to avoid blocking frame reader's ACKs
+  (let ((socket (http2-connection-socket connection)))
+    (bt:with-lock-held ((http2-connection-write-lock connection))
+      (let ((encoder-ctx (http2-connection-hpack-encoder connection))
+            (frames nil))
 
-    ;; Build response headers frame
-    (let ((headers (encode-grpc-response-headers :metadata response-metadata)))
-      (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
-        (push (make-http2-frame
-               :length (length headers-bytes)
-               :type +frame-type-headers+
-               :flags +flag-end-headers+
-               :stream-id stream-id
-               :payload headers-bytes)
-              frames)))
+        ;; Build response headers frame
+        (let ((headers (encode-grpc-response-headers :metadata response-metadata)))
+          (let ((headers-bytes (hpack-encode-headers encoder-ctx headers)))
+            (push (make-http2-frame
+                   :length (length headers-bytes)
+                   :type +frame-type-headers+
+                   :flags +flag-end-headers+
+                   :stream-id stream-id
+                   :payload headers-bytes)
+                  frames)))
 
-    ;; Build DATA frame if we have response
-    (when response-bytes
-      (let ((grpc-message (encode-grpc-message response-bytes)))
-        (push (make-http2-frame
-               :length (length grpc-message)
-               :type +frame-type-data+
-               :flags 0
-               :stream-id stream-id
-               :payload grpc-message)
-              frames)))
+        ;; Build DATA frame if we have response
+        (when response-bytes
+          (let ((grpc-message (encode-grpc-message response-bytes)))
+            (push (make-http2-frame
+                   :length (length grpc-message)
+                   :type +frame-type-data+
+                   :flags 0
+                   :stream-id stream-id
+                   :payload grpc-message)
+                  frames)))
 
-    ;; Build trailers frame with status
-    (let ((trailers (encode-grpc-trailers status-code status-message)))
-      (let ((trailers-bytes (hpack-encode-headers encoder-ctx trailers)))
-        (push (make-http2-frame
-               :length (length trailers-bytes)
-               :type +frame-type-headers+
-               :flags (logior +flag-end-headers+ +flag-end-stream+)
-               :stream-id stream-id
-               :payload trailers-bytes)
-              frames)))
+        ;; Build trailers frame with status
+        (let ((trailers (encode-grpc-trailers status-code status-message)))
+          (let ((trailers-bytes (hpack-encode-headers encoder-ctx trailers)))
+            (push (make-http2-frame
+                   :length (length trailers-bytes)
+                   :type +frame-type-headers+
+                   :flags (logior +flag-end-headers+ +flag-end-stream+)
+                   :stream-id stream-id
+                   :payload trailers-bytes)
+                  frames)))
 
-    ;; Send all frames in one batch with single flush
-    (let ((socket (http2-connection-socket connection)))
-      (dolist (frame (nreverse frames))
-        (write-frame-to-stream frame socket :flush nil))
-      ;; Single flush for all frames
-      (clgrpc.transport:buffered-flush socket))))
+        ;; Send all frames to buffer (but don't flush yet)
+        (dolist (frame (nreverse frames))
+          (write-frame-to-stream frame socket :flush nil))))
+
+    ;; Flush outside the write lock to avoid blocking
+    (clgrpc.transport:buffered-flush socket)))
