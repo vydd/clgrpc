@@ -16,8 +16,12 @@
 
 (defpackage #:clgrpc.http2
   (:documentation "HTTP/2 protocol implementation")
-  (:use #:cl #:clgrpc.utils)
+  (:use #:clgrpc.utils #:cl)
   (:export
+   ;; Debug control
+   #:*debug*
+   #:debug-log
+
    ;; Error codes
    #:+http2-error-no-error+
    #:+http2-error-protocol-error+
@@ -295,7 +299,12 @@
 (defpackage #:clgrpc.grpc
   (:documentation "gRPC protocol implementation")
   (:use #:cl #:clgrpc.utils)
+  (:import-from #:clgrpc.http2 #:*debug* #:debug-log)
   (:export
+   ;; Debug control (re-exported from http2)
+   #:*debug*
+   #:debug-log
+
    ;; Status codes
    #:+grpc-status-ok+
    #:+grpc-status-cancelled+
@@ -493,6 +502,7 @@
 (defpackage #:clgrpc.client
   (:documentation "gRPC client implementation")
   (:use #:cl #:clgrpc.utils #:clgrpc.grpc #:clgrpc.http2 #:clgrpc.transport)
+  (:import-from #:clgrpc.http2 #:debug-log)
   (:export
    ;; Client API
    #:grpc-channel
@@ -527,6 +537,7 @@
 (defpackage #:clgrpc.server
   (:documentation "gRPC server implementation")
   (:use #:cl #:clgrpc.utils #:clgrpc.grpc #:clgrpc.http2 #:clgrpc.transport)
+  (:import-from #:clgrpc.http2 #:debug-log)
   (:export
    ;; Server API
    #:grpc-server

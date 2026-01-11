@@ -40,7 +40,7 @@
 
 ;;; Worker Functions for Each RPC Type
 
-(defun benchmark-unary-worker (client-id duration results-lock results-list-place)
+(defun benchmark-unary-worker (client-id duration stop-flag results-lock results-list)
   "Worker for unary RPC benchmark."
   (let ((channel (make-channel (format nil "localhost:~D" *benchmark-port*) :secure nil))
         (request-count 0)
@@ -65,11 +65,10 @@
 
     ;; Record results
     (bt:with-lock-held (results-lock)
-      (setf (car results-list-place)
-            (cons (list :client-id client-id
-                        :requests request-count
-                        :errors error-count)
-                  (car results-list-place))))))
+      (push (list :client-id client-id
+                  :requests request-count
+                  :errors error-count)
+            results-list))))
 
 (defun benchmark-server-streaming-worker (client-id duration stop-flag results-lock results-list)
   "Worker for server streaming RPC benchmark."
@@ -149,7 +148,7 @@
     (unwind-protect
          (loop while (< (- (get-universal-time) start-time) duration)
                do (handler-case
-                      (let ((stream (call-bidi-streaming channel "routeguide.RouteGuide" "RouteChat"
+                      (let ((stream (call-bidirectional-streaming channel "routeguide.RouteGuide" "RouteChat"
                                                         :timeout 10000)))
                         ;; Send 5 notes
                         (dotimes (i 5)

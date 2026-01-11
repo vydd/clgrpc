@@ -54,7 +54,7 @@
 
     ;; Register call in connection for response handling BEFORE sending request
     ;; This prevents race condition where response arrives before registration
-    (format *error-output* "REGISTER CALL: stream=~D~%" stream-id)
+    (debug-log "REGISTER CALL: stream=~D~%" stream-id)
     (setf (gethash stream-id (http2-connection-active-calls conn)) call)
 
     ;; Build request headers
@@ -154,13 +154,13 @@
      call: grpc-call structure
      headers: Decoded headers (list of (name . value) pairs)
      end-stream: Boolean, true if END_STREAM flag set"
-  (format *error-output* "HANDLE HEADERS: end-stream=~A, has-response-headers=~A~%"
+  (debug-log "HANDLE HEADERS: end-stream=~A, has-response-headers=~A~%"
           end-stream (not (null (grpc-call-response-headers call))))
   (bordeaux-threads:with-lock-held ((grpc-call-lock call))
     (if (grpc-call-response-headers call)
         ;; This is trailers (second HEADERS frame)
         (progn
-          (format *error-output* "  -> Processing as TRAILERS~%")
+          (debug-log "  -> Processing as TRAILERS~%")
           (setf (grpc-call-response-trailers call) headers)
 
           ;; Extract grpc-status and grpc-message from trailers
@@ -172,7 +172,7 @@
             (when message-header
               (setf (grpc-call-status-message call) (cdr message-header))))
 
-          (format *error-output* "  -> Marking call COMPLETED, status=~A~%" (grpc-call-status call))
+          (debug-log "  -> Marking call COMPLETED, status=~A~%" (grpc-call-status call))
           ;; Call is complete
           (setf (grpc-call-completed call) t)
           (bordeaux-threads:condition-notify (grpc-call-condition call)))

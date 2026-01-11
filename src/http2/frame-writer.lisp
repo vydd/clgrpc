@@ -7,9 +7,9 @@
 
    Uses buffered I/O from transport layer for efficiency."
   (let ((encoded (encode-frame frame)))
-    (format *error-output* "SEND: type=~D stream=~D len=~D flags=~D bytes=~{~2,'0X ~}~%"
-            (frame-type frame) (frame-stream-id frame) (frame-length frame) (frame-flags frame)
-            (coerce encoded 'list))
+    (debug-log "SEND: type=~D stream=~D len=~D flags=~D bytes=~{~2,'0X ~}~%"
+               (frame-type frame) (frame-stream-id frame) (frame-length frame) (frame-flags frame)
+               (coerce encoded 'list))
     ;; Write to buffer (may not flush immediately)
     (clgrpc.transport:buffered-write-bytes buffered-socket encoded)
     ;; Flush to ensure frame is sent

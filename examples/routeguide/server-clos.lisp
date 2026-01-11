@@ -121,7 +121,7 @@
 
   (declare (ignore service context))
 
-  (format *error-output* "GetFeature: lat=~D lon=~D~%"
+  (clgrpc.http2:debug-log "GetFeature: lat=~D lon=~D~%"
           (routeguide:point-latitude request)
           (routeguide:point-longitude request))
 
@@ -144,13 +144,13 @@
 
   (declare (ignore service))
 
-  (format *error-output* "ListFeatures: rectangle~%")
+  (clgrpc.http2:debug-log "ListFeatures: rectangle~%")
 
   (let ((stream (clgrpc.server:get-stream context)))
     ;; Stream all features in the rectangle
     (dolist (feature *route-features*)
       (when (in-range (routeguide:feature-location feature) request)
-        (format *error-output* "  Sending: ~A~%"
+        (clgrpc.http2:debug-log "  Sending: ~A~%"
                 (routeguide:feature-name feature))
         (clgrpc.server:server-stream-send stream
                                          (proto-serialize feature))))
@@ -167,7 +167,7 @@
 
   (declare (ignore service request))
 
-  (format *error-output* "RecordRoute: receiving points~%")
+  (clgrpc.http2:debug-log "RecordRoute: receiving points~%")
 
   (let ((stream (clgrpc.server:get-stream context))
         (point-count 0)
@@ -181,7 +181,7 @@
           while msg-bytes
           do (let ((point (proto-deserialize 'routeguide:point msg-bytes)))
                (incf point-count)
-               (format *error-output* "  Point ~D: lat=~D lon=~D~%"
+               (clgrpc.http2:debug-log "  Point ~D: lat=~D lon=~D~%"
                        point-count
                        (routeguide:point-latitude point)
                        (routeguide:point-longitude point))
@@ -202,7 +202,7 @@
     (let* ((end-time (get-internal-real-time))
            (elapsed-seconds (round (/ (- end-time start-time)
                                     internal-time-units-per-second))))
-      (format *error-output* "  Summary: ~D points, ~D features, ~D meters, ~D seconds~%"
+      (clgrpc.http2:debug-log "  Summary: ~D points, ~D features, ~D meters, ~D seconds~%"
               point-count feature-count distance elapsed-seconds)
 
       (values (proto-serialize
@@ -222,14 +222,14 @@
 
   (declare (ignore service request))
 
-  (format *error-output* "RouteChat: starting chat~%")
+  (clgrpc.http2:debug-log "RouteChat: starting chat~%")
 
   (let ((stream (clgrpc.server:get-stream context)))
     ;; Receive notes and send back previous notes at same location
     (loop for msg-bytes = (clgrpc.server:server-stream-recv stream)
           while msg-bytes
           do (let ((note (proto-deserialize 'routeguide:route-note msg-bytes)))
-               (format *error-output* "  Received note at lat=~D lon=~D: ~A~%"
+               (clgrpc.http2:debug-log "  Received note at lat=~D lon=~D: ~A~%"
                        (routeguide:point-latitude
                         (routeguide:route-note-location note))
                        (routeguide:point-longitude
@@ -241,7 +241,7 @@
 
                  ;; Send all previous notes at this location
                  (dolist (prev-note (gethash key *route-notes*))
-                   (format *error-output* "    Sending previous note: ~A~%"
+                   (clgrpc.http2:debug-log "    Sending previous note: ~A~%"
                            (routeguide:route-note-message prev-note))
                    (clgrpc.server:server-stream-send stream
                                                     (proto-serialize prev-note)))

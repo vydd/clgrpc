@@ -2,6 +2,17 @@
 
 (in-package #:clgrpc.http2)
 
+;;; Debug Control
+
+(defparameter *debug* nil
+  "When T, enables debug logging output for HTTP/2 operations.
+   Set to NIL (default) for production use to maximize performance.")
+
+(defmacro debug-log (format-string &rest args)
+  "Log a debug message if *debug* is enabled."
+  `(when *debug*
+     (format t ,format-string ,@args)))
+
 ;;; Frame Types (RFC 9113 Section 6)
 
 (defconstant +frame-type-data+ #x00 "DATA frame")

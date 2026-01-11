@@ -141,7 +141,7 @@
    Preface is: \"PRI * HTTP/2.0\\r\\n\\r\\nSM\\r\\n\\r\\n\" (24 bytes)"
   (let ((preface (http2-client-preface-bytes))
         (buffered-socket (http2-connection-socket connection)))
-    (format *error-output* "SEND PREFACE: ~D bytes: ~{~2,'0X ~}~%"
+    (debug-log "SEND PREFACE: ~D bytes: ~{~2,'0X ~}~%"
             (length preface) (coerce preface 'list))
     (clgrpc.transport:buffered-write-bytes buffered-socket preface)
     (clgrpc.transport:buffered-flush buffered-socket)))
@@ -169,21 +169,21 @@
    Thread reads frames in loop and dispatches to appropriate handlers."
   (bordeaux-threads:make-thread
    (lambda ()
-     (format *error-output* "Frame reader thread started~%")
+     (debug-log "Frame reader thread started~%")
      (handler-case
          (loop
-           (format *error-output* "Frame reader: waiting for frame...~%")
+           (debug-log "Frame reader: waiting for frame...~%")
            (let ((frame (read-frame-from-stream (http2-connection-socket connection))))
              (unless frame
                ;; EOF - connection closed
-               (format *error-output* "Frame reader: EOF~%")
+               (debug-log "Frame reader: EOF~%")
                (return))
 
              ;; Dispatch frame to handler
              (dispatch-frame-to-call connection frame)))
        (error (e)
          ;; Log error and close connection
-         (format *error-output* "Frame reader error: ~A~%" e)
+         (debug-log "Frame reader error: ~A~%" e)
          (connection-close connection))))
    :name "http2-frame-reader"))
 
@@ -204,13 +204,12 @@
        (let* ((decoder-ctx (http2-connection-hpack-decoder connection))
               (headers (hpack-decode-headers decoder-ctx (frame-payload frame)))
               (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
-         (format *error-output* "DISPATCH HEADERS: stream=~D, calling find-call-by-stream-id...~%" stream-id)
-         (force-output *error-output*)
+         (debug-log "DISPATCH HEADERS: stream=~D, calling find-call-by-stream-id...~%" stream-id)
          (let ((call (find-call-by-stream-id connection stream-id)))
-           (format *error-output* "DISPATCH HEADERS: stream=~D call=~A~%" stream-id (not (null call)))
+           (debug-log "DISPATCH HEADERS: stream=~D call=~A~%" stream-id (not (null call)))
            (if call
                (call-handle-headers call headers end-stream)
-               (format *error-output* "  WARNING: No call found for stream ~D~%" stream-id)))))
+               (debug-log "  WARNING: No call found for stream ~D~%" stream-id)))))
 
       ((= frame-type +frame-type-data+)
        (let ((end-stream (logtest (frame-flags frame) +flag-end-stream+))
@@ -221,7 +220,7 @@
       ((= frame-type +frame-type-rst-stream+)
        (let ((error-code (decode-uint32-be (frame-payload frame) 0))
              (call (find-call-by-stream-id connection stream-id)))
-         (format *error-output* "RST_STREAM on stream ~D: error code=~D~%" stream-id error-code)
+         (debug-log "RST_STREAM on stream ~D: error code=~D~%" stream-id error-code)
          (when call
            (call-handle-rst-stream call error-code))))
 
@@ -248,13 +247,9 @@
 
 (defun find-call-by-stream-id (connection stream-id)
   "Find active call by stream ID."
-  (force-output *error-output*)  ; Flush before logging
-  (format *error-output* "FIND-CALL ENTRY: stream=~D~%" stream-id)
-  (force-output *error-output*)
+  (debug-log "FIND-CALL ENTRY: stream=~D~%" stream-id)
   (let ((ht (http2-connection-active-calls connection)))
-    (format *error-output* "FIND-CALL: hash-table=~A count=~D~%" ht (hash-table-count ht))
-    (force-output *error-output*)
+    (debug-log "FIND-CALL: hash-table=~A count=~D~%" ht (hash-table-count ht))
     (let ((call (gethash stream-id ht)))
-      (format *error-output* "FIND-CALL RESULT: stream=~D found=~A~%" stream-id (not (null call)))
-      (force-output *error-output*)
+      (debug-log "FIND-CALL RESULT: stream=~D found=~A~%" stream-id (not (null call)))
       call)))

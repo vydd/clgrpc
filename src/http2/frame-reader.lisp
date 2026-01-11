@@ -25,8 +25,8 @@
             (let* ((total-size (+ +frame-header-size+ length))
                    (frame-bytes (clgrpc.transport:buffered-read-bytes buffered-socket total-size)))
 
-              (format *error-output* "RECV: type=~D stream=~D len=~D flags=~D~%"
-                      type stream-id length flags)
+              (debug-log "RECV: type=~D stream=~D len=~D flags=~D~%"
+                        type stream-id length flags)
 
               ;; Extract payload (skip 9-byte header)
               (let ((payload (if (zerop length)

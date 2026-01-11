@@ -112,7 +112,7 @@
                  (when client-socket
                    (server-handle-connection server client-socket))))
     (error (e)
-      (format *error-output* "Server listen loop error: ~A~%" e)
+      (debug-log "Server listen loop error: ~A~%" e)
       (bordeaux-threads:with-lock-held ((grpc-server-lock server))
         (setf (grpc-server-running server) nil)))))
 
@@ -172,7 +172,7 @@
             ;; Dispatch frame
             (server-dispatch-frame server connection frame))))
     (error (e)
-      (format *error-output* "Connection error: ~A~%" e)))
+      (debug-log "Connection error: ~A~%" e)))
 
   ;; Cleanup
   (ignore-errors (connection-close connection))
@@ -244,7 +244,7 @@
          (headers (hpack-decode-headers decoder-ctx (frame-payload frame)))
          (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
 
-    (format *error-output* "SERVER: HEADERS stream=~D end-stream=~A~%" stream-id end-stream)
+    (debug-log "SERVER: HEADERS stream=~D end-stream=~A~%" stream-id end-stream)
 
     ;; Extract path to determine RPC type
     (let ((path (or (cdr (assoc :path headers))
@@ -253,7 +253,7 @@
       (multiple-value-bind (handler service method rpc-type)
           (route-request (grpc-server-router server) path)
 
-        (format *error-output* "SERVER: RPC type=~A service=~A method=~A~%"
+        (debug-log "SERVER: RPC type=~A service=~A method=~A~%"
                 rpc-type service method)
 
         (cond
@@ -331,7 +331,7 @@
         (data (frame-payload frame))
         (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
 
-    (format *error-output* "SERVER: DATA stream=~D len=~D end-stream=~A~%"
+    (debug-log "SERVER: DATA stream=~D len=~D end-stream=~A~%"
             stream-id (length data) end-stream)
 
     ;; Find stream state (could be server-stream-state or grpc-server-stream)
@@ -339,13 +339,13 @@
             (gethash stream-id (http2-connection-active-calls connection))))
 
       (unless stream-state
-        (format *error-output* "WARNING: DATA for unknown stream ~D~%" stream-id)
+        (debug-log "WARNING: DATA for unknown stream ~D~%" stream-id)
         (return-from server-handle-data-frame nil))
 
       (cond
         ;; Streaming RPC - decode messages and add to queue
         ((typep stream-state 'grpc-server-stream)
-         (format *error-output* "SERVER: Streaming RPC - decoding gRPC messages~%")
+         (debug-log "SERVER: Streaming RPC - decoding gRPC messages~%")
 
          ;; Decode gRPC message from DATA frame
          (when (> (length data) 0)
@@ -354,17 +354,17 @@
                    (decode-grpc-message data)
                  (declare (ignore compressed total-read))
 
-                 (format *error-output* "SERVER: Decoded message (~D bytes), adding to queue~%"
+                 (debug-log "SERVER: Decoded message (~D bytes), adding to queue~%"
                          (length message-bytes))
 
                  ;; Add to stream queue
                  (server-stream-add-message stream-state message-bytes))
              (error (e)
-               (format *error-output* "SERVER: Error decoding message: ~A~%" e))))
+               (debug-log "SERVER: Error decoding message: ~A~%" e))))
 
          ;; Mark stream closed if END_STREAM
          (when end-stream
-           (format *error-output* "SERVER: Received END_STREAM, marking recv closed~%")
+           (debug-log "SERVER: Received END_STREAM, marking recv closed~%")
            (server-stream-mark-recv-closed stream-state)))
 
         ;; Unary RPC - accumulate data
@@ -451,7 +451,7 @@
      stream: grpc-server-stream
      context: handler-context
      rpc-type: RPC type (:client-streaming or :bidirectional)"
-  (format *error-output* "SERVER: Streaming handler service=~A method=~A rpc-type=~A~%"
+  (debug-log "SERVER: Streaming handler service=~A method=~A rpc-type=~A~%"
           service method rpc-type)
 
   (handler-case
@@ -464,7 +464,7 @@
               (:bidirectional
                (handle-bidirectional-streaming handler service method stream context)))
 
-          (format *error-output* "SERVER: Streaming handler returned status=~D~%"
+          (debug-log "SERVER: Streaming handler returned status=~D~%"
                   status-code)
 
           ;; Close stream with status
@@ -472,7 +472,7 @@
 
     (error (e)
       ;; Error in handler - send INTERNAL error
-      (format *error-output* "SERVER: Streaming handler error: ~A~%" e)
+      (debug-log "SERVER: Streaming handler error: ~A~%" e)
       (server-stream-close stream +grpc-status-internal+
                           (format nil "Internal error: ~A" e)
                           nil))))
@@ -487,7 +487,7 @@
      request-bytes: Initial request message
      stream: grpc-server-stream
      context: handler-context"
-  (format *error-output* "SERVER: Server-streaming handler service=~A method=~A request-len=~D~%"
+  (debug-log "SERVER: Server-streaming handler service=~A method=~A request-len=~D~%"
           service method (length request-bytes))
 
   (handler-case
@@ -496,7 +496,7 @@
         (multiple-value-bind (status-code status-message response-metadata)
             (handle-server-streaming handler service method request-bytes stream context)
 
-          (format *error-output* "SERVER: Server-streaming handler returned status=~D~%"
+          (debug-log "SERVER: Server-streaming handler returned status=~D~%"
                   status-code)
 
           ;; Close stream with status
@@ -504,7 +504,7 @@
 
     (error (e)
       ;; Error in handler - send INTERNAL error
-      (format *error-output* "SERVER: Server-streaming handler error: ~A~%" e)
+      (debug-log "SERVER: Server-streaming handler error: ~A~%" e)
       (server-stream-close stream +grpc-status-internal+
                           (format nil "Internal error: ~A" e)
                           nil))))
@@ -520,9 +520,9 @@
   (let ((headers (server-stream-state-headers stream-state))
         (request-data (server-stream-state-data stream-state)))
 
-    (format *error-output* "SERVER: Processing complete request stream=~D data-len=~D~%"
+    (debug-log "SERVER: Processing complete request stream=~D data-len=~D~%"
             stream-id (if request-data (length request-data) 0))
-    (format *error-output* "SERVER: Headers: ~S~%" headers)
+    (debug-log "SERVER: Headers: ~S~%" headers)
 
     ;; Extract gRPC message from HTTP/2 DATA payload
     (let ((request-bytes
@@ -601,7 +601,7 @@
      rpc-type: RPC type (:unary, :client-streaming, :server-streaming, :bidirectional)"
   (declare (ignore server))
 
-  (format *error-output* "SERVER: Calling handler service=~A method=~A rpc-type=~A request-len=~D~%"
+  (debug-log "SERVER: Calling handler service=~A method=~A rpc-type=~A request-len=~D~%"
           service method rpc-type (length request-bytes))
 
   (handler-case
@@ -611,7 +611,7 @@
          (multiple-value-bind (response-bytes status-code status-message response-metadata)
              (handle-unary handler service method request-bytes context)
 
-           (format *error-output* "SERVER: Handler returned status=~D response-len=~D~%"
+           (debug-log "SERVER: Handler returned status=~D response-len=~D~%"
                    status-code (if response-bytes (length response-bytes) 0))
 
            ;; Send response
@@ -621,7 +621,7 @@
 
         ((:client-streaming :server-streaming :bidirectional)
          ;; Streaming RPC - not yet implemented
-         (format *error-output* "SERVER: Streaming RPCs not yet implemented: ~A~%" rpc-type)
+         (debug-log "SERVER: Streaming RPCs not yet implemented: ~A~%" rpc-type)
          (server-send-response connection stream-id
                               nil +grpc-status-unimplemented+
                               (format nil "~A RPC not yet implemented" rpc-type)
@@ -629,7 +629,7 @@
 
     (error (e)
       ;; Error in handler - send INTERNAL error
-      (format *error-output* "SERVER: Handler error: ~A~%" e)
+      (debug-log "SERVER: Handler error: ~A~%" e)
       (server-send-response connection stream-id
                            nil +grpc-status-internal+
                            (format nil "Internal error: ~A" e)

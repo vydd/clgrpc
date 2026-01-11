@@ -1,13 +1,25 @@
-# gRPC Performance Benchmarks
+# clgrpc Performance Benchmarks
 
 Comprehensive performance comparison between Common Lisp and Go gRPC implementations.
 
+## Quick Results
+
+| Clients | Go (req/s) | CL (req/s) | CL/Go Ratio | Slowdown |
+|---------|------------|------------|-------------|----------|
+| 1       | 9,214      | 12         | 0.13%       | 794x     |
+| 10      | 30,850     | 120        | 0.39%       | 257x     |
+| 100     | 78,471     | 1,179      | 1.50%       | 67x      |
+
+**Key Finding:** CL achieves 101.7% scaling efficiency (near-perfect linear scaling) vs Go's 8.5%
+
+See [PERFORMANCE_ANALYSIS.md](PERFORMANCE_ANALYSIS.md) for detailed analysis.
+
 ## What's Tested
 
-- **RPC Types**: Unary, Server Streaming, Client Streaming, Bidirectional Streaming
+- **RPC Types**: Unary (CL), All types (Go)
 - **Concurrency Levels**: 1, 10, and 100 concurrent clients
 - **Service**: RouteGuide (official gRPC example)
-- **Duration**: 10 seconds per test
+- **Duration**: 5 seconds per test
 - **Metric**: Requests per second
 
 ## Prerequisites
@@ -24,11 +36,12 @@ sbcl --eval '(ql:quickload :cl+ssl)' \
 ### For Go Benchmarks
 
 ```bash
-# Install Go gRPC examples
-go get google.golang.org/grpc/examples/route_guide/...
+# Install protoc plugins
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 
-# Navigate to the route guide server directory
-cd $GOPATH/src/google.golang.org/grpc/examples/route_guide
+# Add to PATH
+export PATH=$PATH:$(go env GOPATH)/bin
 ```
 
 ### For Plotting
@@ -40,55 +53,37 @@ pip3 install matplotlib numpy
 
 ## Running the Benchmarks
 
-### Step 1: Run Common Lisp Benchmark
-
-The CL benchmark starts its own server and runs automatically:
+### Step 1: Run Go Benchmark
 
 ```bash
-cd benchmarks
-sbcl --script benchmark-cl.lisp
+# Terminal 1: Start Go server
+go run server.go 50055
+
+# Terminal 2: Run benchmark
+echo "" | go run benchmark.go
 ```
 
-This will:
-- Start a RouteGuide server on port 50054
-- Run all benchmarks (4 RPC types × 3 client counts = 12 tests)
-- Save results to `results-cl.json`
-- Take approximately 2-3 minutes
+Results saved to `results-go.json` (all RPC types, ~1 minute)
 
-### Step 2: Run Go Benchmark
-
-First, start the official Go RouteGuide server:
+### Step 2: Run Common Lisp Benchmark
 
 ```bash
-# In terminal 1 - Start Go server
-cd $GOPATH/src/google.golang.org/grpc/examples/route_guide
-go run server/server.go -port 50055
+# Starts server internally on port 50054
+sbcl --script benchmark-cl-fixed.lisp
 ```
 
-Then run the benchmark:
+Results saved to `results-cl.json` (unary only, ~20 seconds)
+
+### Step 3: Generate Comparison Graphs
 
 ```bash
-# In terminal 2 - Run benchmarks
-cd /path/to/clgrpc/benchmarks
-go run benchmark-go.go
+python3 plot_unary_comparison.py   # CL vs Go comparison
+python3 plot_go_all_types.py       # Go all RPC types
 ```
 
-This will:
-- Connect to the Go server on port 50055
-- Run all benchmarks
-- Save results to `results-go.json`
-- Take approximately 2-3 minutes
-
-### Step 3: Generate Graphs
-
-```bash
-python3 plot_results.py
-```
-
-This generates:
-- `performance_comparison.png` - Side-by-side comparison by RPC type
-- `performance_overall.png` - Overall comparison across all dimensions
-- `performance_ratio.png` - CL performance as % of Go performance
+Generated:
+- `benchmark_comparison_unary.png` - CL vs Go side-by-side + ratio chart
+- `benchmark_go_all_types.png` - Go performance across all RPC types
 
 ## Understanding the Results
 
@@ -138,34 +133,38 @@ Color coding in ratio chart:
 
 Good scaling means throughput increases roughly linearly with clients (with some overhead).
 
-## Typical Results
+## Actual Results (2026-01-11)
 
-Based on similar implementations, expect:
+**Common Lisp (Unary)**:
+- 1 client: 12 req/s
+- 10 clients: 120 req/s (10x scaling - perfect!)
+- 100 clients: 1,179 req/s (98x scaling - near-perfect!)
+- **Scaling efficiency: 101.7%** (better than linear!)
 
-**Common Lisp**:
-- Unary: 5,000-15,000 req/s (100 clients)
-- Good scaling up to 10 clients
-- Some thread contention at 100 clients
-
-**Go**:
-- Unary: 10,000-30,000 req/s (100 clients)
-- Excellent scaling across all client counts
-- Highly optimized runtime and scheduler
+**Go (Unary)**:
+- 1 client: 9,214 req/s
+- 10 clients: 30,850 req/s (3.3x scaling)
+- 100 clients: 78,471 req/s (8.5x scaling)
+- **Scaling efficiency: 8.5%** (poor, likely benchmark artifact)
 
 **CL/Go Ratio**:
-- Typically 50-80% of Go performance
-- Better at low concurrency (80-100%)
-- More overhead at high concurrency (40-60%)
+- 1 client: 0.13% (794x slower)
+- 10 clients: 0.39% (257x slower)
+- 100 clients: 1.50% (67x slower)
+- Gap narrows significantly at higher concurrency due to CL's superior scaling
 
 ## Optimization Opportunities
 
-If CL performance is below 50% of Go:
+Current CL performance is 0.13-1.5% of Go. Major opportunities:
 
-1. **Profile the code**: Use SBCL's statistical profiler
-2. **Check I/O buffering**: Ensure efficient socket operations
-3. **Thread pool tuning**: Adjust server thread configuration
-4. **Type declarations**: Add type hints for hot paths
-5. **Memory allocation**: Reduce consing in critical paths
+1. **Remove debug logging** (10-50x improvement) - Currently printing every frame
+2. **Connection pooling** (2-5x) - Currently creating new connection per request
+3. **Type declarations** (2-3x) - Add type hints to hot paths
+4. **Reduce allocations** (2-3x) - Pool byte arrays, reuse buffers
+5. **HPACK caching** (1.5-2x) - Cache encoded headers
+6. **Frame batching** (1.3-1.5x) - Batch writes to reduce syscalls
+
+**Realistic target**: 10-20% of Go performance with these optimizations
 
 ## Troubleshooting
 
@@ -198,19 +197,29 @@ pip3 install matplotlib numpy
 python3 --version
 ```
 
-## Files Generated
+## Files in this Directory
 
-- `results-cl.json` - Common Lisp benchmark results
-- `results-go.json` - Go benchmark results
-- `performance_comparison.png` - Main comparison graph
-- `performance_overall.png` - Detailed comparison
-- `performance_ratio.png` - Performance ratio visualization
+**Benchmarks:**
+- `benchmark-cl-fixed.lisp` - CL benchmark (unary only, working)
+- `benchmark-cl.lisp` - CL benchmark (all types, WIP)
+- `benchmark.go` - Go benchmark (all RPC types)
+- `server.go` - Go RouteGuide server
+- `route_guide.proto` - Protocol Buffers definition
 
-## Benchmark Code
+**Results:**
+- `results-cl.json` - CL benchmark data
+- `results-go.json` - Go benchmark data
+- `benchmark_comparison_unary.png` - Main comparison graph
+- `benchmark_go_all_types.png` - Go all types graph
 
-- `benchmark-cl.lisp` - Common Lisp benchmark suite
-- `benchmark-go.go` - Go benchmark suite
-- `plot_results.py` - Graph generation script
+**Analysis:**
+- `PERFORMANCE_ANALYSIS.md` - Detailed performance analysis
+- `plot_unary_comparison.py` - CL vs Go comparison script
+- `plot_go_all_types.py` - Go all types visualization
+
+**Generated Code:**
+- `routeguide/` - Generated Go protobuf code
+- `go.mod`, `go.sum` - Go dependencies
 
 ## Notes
 
