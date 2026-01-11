@@ -1,37 +1,16 @@
-;;;; server.lisp - RouteGuide gRPC server
+;;;; server.lisp - RouteGuide gRPC server (handler-based)
 ;;;;
 ;;;; Demonstrates all four types of gRPC calls:
 ;;;; - GetFeature: Unary RPC
 ;;;; - ListFeatures: Server streaming RPC
 ;;;; - RecordRoute: Client streaming RPC
 ;;;; - RouteChat: Bidirectional streaming RPC
+;;;;
+;;;; Usage:
+;;;;   (ql:quickload :clgrpc-examples)
+;;;;   (clgrpc-examples:routeguide-server-main)
 
-;; Load Quicklisp
-(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file quicklisp-init)
-    (load quicklisp-init)))
-(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file quicklisp-init)
-    (load quicklisp-init)))
-
-;; Install dependencies
-(ql:quickload '(:cl+ssl :usocket :bordeaux-threads
-                :alexandria :trivial-gray-streams :fast-io :babel :cl-json)
-              :silent t)
-
-;; Add current directory to ASDF registry
-(push (make-pathname :name nil :type nil
-                     :defaults (merge-pathnames "../../" *load-truename*))
-      asdf:*central-registry*)
-
-;; Load the system
-(format t "~%Loading clgrpc...~%")
-(asdf:load-system :clgrpc)
-
-;; Load RouteGuide protobuf definitions
-(load (merge-pathnames "routeguide-proto.lisp" *load-truename*))
-
-(in-package #:clgrpc.server)
+(in-package #:clgrpc-examples)
 
 (defparameter *route-features* nil
   "List of known features loaded from database")
@@ -41,7 +20,7 @@
 
 ;;; Helper functions
 
-(defun load-features (filename)
+(defun routeguide-load-features (filename)
   "Load features from JSON file."
   (with-open-file (in filename)
     (let ((json (cl-json:decode-json in)))
@@ -55,20 +34,20 @@
                               :longitude (cdr (assoc :longitude location))))))
               json))))
 
-(defun point-equal (p1 p2)
+(defun routeguide-point-equal (p1 p2)
   "Check if two points are equal."
   (and (= (routeguide:point-latitude p1)
           (routeguide:point-latitude p2))
        (= (routeguide:point-longitude p1)
           (routeguide:point-longitude p2))))
 
-(defun point-hash (point)
+(defun routeguide-point-hash (point)
   "Generate hash key for a point."
   (format nil "~D,~D"
           (routeguide:point-latitude point)
           (routeguide:point-longitude point)))
 
-(defun in-range (point rect)
+(defun routeguide-in-range (point rect)
   "Check if point is inside rectangle."
   (let* ((lo (routeguide:rectangle-lo rect))
          (hi (routeguide:rectangle-hi rect))
@@ -85,7 +64,7 @@
     (and (>= lat bottom) (<= lat top)
          (>= lon left) (<= lon right))))
 
-(defun calc-distance (p1 p2)
+(defun routeguide-calc-distance (p1 p2)
   "Calculate distance between two points in meters using Haversine formula."
   (let* ((coord-factor (/ 1.0 1e7))
          (lat1 (* (routeguide:point-latitude p1) coord-factor))
@@ -120,20 +99,16 @@
        (format *error-output* "GetFeature: lat=~D lon=~D~%"
                (routeguide:point-latitude point)
                (routeguide:point-longitude point))
-
-       ;; Find feature at this location
        (let ((feature (find-if (lambda (f)
-                                (point-equal point
-                                            (routeguide:feature-location f)))
-                              *route-features*)))
+                                 (routeguide-point-equal point
+                                                         (routeguide:feature-location f)))
+                               *route-features*)))
          (if feature
              (values (proto-serialize feature)
                      +grpc-status-ok+ nil nil)
-             ;; No feature found - return unnamed feature
              (values (proto-serialize
                       (routeguide:make-feature :name "" :location point))
                      +grpc-status-ok+ nil nil)))))
-
     (t
      (values nil +grpc-status-unimplemented+
              (format nil "Unknown method: ~A" method-name)
@@ -141,24 +116,19 @@
 
 ;; ListFeatures - Server streaming RPC
 (defmethod handle-server-streaming ((handler route-guide-handler)
-                                     service-name method-name
-                                     request-bytes stream context)
+                                           service-name method-name
+                                           request-bytes stream context)
   (declare (ignore service-name context))
   (cond
     ((string= method-name "ListFeatures")
      (let ((rect (proto-deserialize 'routeguide:rectangle request-bytes)))
        (format *error-output* "ListFeatures: rectangle~%")
-
-       ;; Stream all features in the rectangle
        (dolist (feature *route-features*)
-         (when (in-range (routeguide:feature-location feature) rect)
+         (when (routeguide-in-range (routeguide:feature-location feature) rect)
            (format *error-output* "  Sending: ~A~%"
                    (routeguide:feature-name feature))
-           (server-stream-send stream
-                              (proto-serialize feature))))
-
+           (server-stream-send stream (proto-serialize feature))))
        (values +grpc-status-ok+ nil nil)))
-
     (t
      (values +grpc-status-unimplemented+
              (format nil "Unknown method: ~A" method-name)
@@ -166,20 +136,17 @@
 
 ;; RecordRoute - Client streaming RPC
 (defmethod handle-client-streaming ((handler route-guide-handler)
-                                     service-name method-name
-                                     stream context)
+                                           service-name method-name
+                                           stream context)
   (declare (ignore service-name context))
   (cond
     ((string= method-name "RecordRoute")
      (format *error-output* "RecordRoute: receiving points~%")
-
      (let ((point-count 0)
            (feature-count 0)
            (distance 0)
            (start-time (get-internal-real-time))
            (previous-point nil))
-
-       ;; Receive all points
        (loop for msg-bytes = (server-stream-recv stream)
              while msg-bytes
              do (let ((point (proto-deserialize 'routeguide:point msg-bytes)))
@@ -188,26 +155,19 @@
                           point-count
                           (routeguide:point-latitude point)
                           (routeguide:point-longitude point))
-
-                  ;; Check if there's a feature here
                   (when (find-if (lambda (f)
-                                  (point-equal point
-                                              (routeguide:feature-location f)))
-                                *route-features*)
+                                   (routeguide-point-equal point
+                                                           (routeguide:feature-location f)))
+                                 *route-features*)
                     (incf feature-count))
-
-                  ;; Calculate distance from previous point
                   (when previous-point
-                    (incf distance (calc-distance previous-point point)))
-
+                    (incf distance (routeguide-calc-distance previous-point point)))
                   (setf previous-point point)))
-
        (let* ((end-time (get-internal-real-time))
               (elapsed-seconds (round (/ (- end-time start-time)
-                                       internal-time-units-per-second))))
+                                         internal-time-units-per-second))))
          (format *error-output* "  Summary: ~D points, ~D features, ~D meters, ~D seconds~%"
                  point-count feature-count distance elapsed-seconds)
-
          (let ((summary (routeguide:make-route-summary
                          :point-count point-count
                          :feature-count feature-count
@@ -215,7 +175,6 @@
                          :elapsed-time elapsed-seconds)))
            (values (proto-serialize summary)
                    +grpc-status-ok+ nil nil)))))
-
     (t
      (values nil +grpc-status-unimplemented+
              (format nil "Unknown method: ~A" method-name)
@@ -223,14 +182,12 @@
 
 ;; RouteChat - Bidirectional streaming RPC
 (defmethod handle-bidirectional-streaming ((handler route-guide-handler)
-                                            service-name method-name
-                                            stream context)
+                                                  service-name method-name
+                                                  stream context)
   (declare (ignore service-name context))
   (cond
     ((string= method-name "RouteChat")
      (format *error-output* "RouteChat: starting chat~%")
-
-     ;; Receive notes and send back previous notes at same location
      (loop for msg-bytes = (server-stream-recv stream)
            while msg-bytes
            do (let ((note (proto-deserialize 'routeguide:route-note msg-bytes)))
@@ -240,22 +197,13 @@
                         (routeguide:point-longitude
                          (routeguide:route-note-location note))
                         (routeguide:route-note-message note))
-
-                ;; Get key for this location
-                (let ((key (point-hash (routeguide:route-note-location note))))
-
-                  ;; Send all previous notes at this location
+                (let ((key (routeguide-point-hash (routeguide:route-note-location note))))
                   (dolist (prev-note (gethash key *route-notes*))
                     (format *error-output* "    Sending previous note: ~A~%"
                             (routeguide:route-note-message prev-note))
-                    (server-stream-send stream
-                                       (proto-serialize prev-note)))
-
-                  ;; Store this note for future queries
+                    (server-stream-send stream (proto-serialize prev-note)))
                   (push note (gethash key *route-notes*)))))
-
      (values +grpc-status-ok+ nil nil))
-
     (t
      (values +grpc-status-unimplemented+
              (format nil "Unknown method: ~A" method-name)
@@ -263,21 +211,26 @@
 
 ;;; Main
 
-(defun main ()
-  "Start RouteGuide server."
+(defun routeguide-server-main (&optional (db-path nil))
+  "Start RouteGuide server.
+DB-PATH is the path to route_guide_db.json. If not provided, looks in
+the examples/routeguide directory."
   (format t "~%RouteGuide gRPC Server~%")
   (format t "======================~%~%")
 
   ;; Load feature database
   (format t "Loading features...~%")
-  (setf *route-features* (load-features
-                    (merge-pathnames "route_guide_db.json" *load-truename*)))
+  (let ((db-file (or db-path
+                     (asdf:system-relative-pathname :clgrpc-examples
+                                                    "routeguide/route_guide_db.json"))))
+    (setf *route-features* (routeguide-load-features db-file)))
   (format t "Loaded ~D features~%~%" (length *route-features*))
+
+  ;; Reset route notes
+  (clrhash *route-notes*)
 
   ;; Create server
   (let ((server (make-server :port 50051)))
-
-    ;; Register RouteGuide service
     (let ((handler (make-instance 'route-guide-handler)))
       (register-handler (grpc-server-router server)
                         "routeguide.RouteGuide" "GetFeature"
@@ -291,23 +244,16 @@
       (register-handler (grpc-server-router server)
                         "routeguide.RouteGuide" "RouteChat"
                         handler :rpc-type :bidirectional))
-
     (format t "Registered RouteGuide service~%~%")
-
-    ;; Start server
     (format t "Starting server on port 50051...~%")
     (start-server server)
     (format t "~%Server listening on port 50051~%")
     (format t "Press Ctrl+C to stop~%~%")
-
-    ;; Keep running
     (handler-case
         (loop (sleep 1))
-      (sb-sys:interactive-interrupt ()
+      (#+sbcl sb-sys:interactive-interrupt
+       #+ccl ccl:interrupt-signal-condition
+       #-(or sbcl ccl) error ()
         (format t "~%Stopping server...~%")
         (stop-server server)
         (format t "Server stopped~%")))))
-
-;; Run if called with --run
-(when (member "--run" sb-ext:*posix-argv* :test #'string=)
-  (main))

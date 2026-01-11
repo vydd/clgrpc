@@ -1,8 +1,9 @@
 ;;;; Unit test: HTTP/2 preface bytes
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Usage: sbcl --load http2-preface-test.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Testing HTTP/2 preface generation...~%")
 

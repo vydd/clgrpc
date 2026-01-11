@@ -1,29 +1,11 @@
 ;;;; server.lisp - Common Lisp gRPC server for interop testing
 ;;;;
 ;;;; This server implements the HelloWorld service for Go/CL clients.
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Usage: sbcl --load server.lisp --eval '(helloworld-server:main)' --quit
 
-(require :asdf)
-
-;; Load Quicklisp (check both .quicklisp and quicklisp directories)
-(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file quicklisp-init)
-    (load quicklisp-init)))
-(let ((quicklisp-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file quicklisp-init)
-    (load quicklisp-init)))
-
-;; Load dependencies via Quicklisp
-(ql:quickload :babel :verbose nil :silent t)
-(ql:quickload :bordeaux-threads :verbose nil :silent t)
-(ql:quickload :usocket :verbose nil :silent t)
-(ql:quickload :cl+ssl :verbose nil :silent t)
-(ql:quickload :alexandria :verbose nil :silent t)
-
-;; Load clgrpc
-(push (make-pathname :name nil :type nil
-                     :defaults (merge-pathnames "../../../" *load-truename*))
-      asdf:*central-registry*)
-(asdf:load-system :clgrpc)
+(ql:quickload :clgrpc :silent t)
 
 (defpackage #:helloworld-server
   (:use #:cl))

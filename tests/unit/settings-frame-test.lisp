@@ -1,8 +1,9 @@
 ;;;; Unit test: SETTINGS frame encoding
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Usage: sbcl --load settings-frame-test.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Testing SETTINGS frame encoding...~%")
 

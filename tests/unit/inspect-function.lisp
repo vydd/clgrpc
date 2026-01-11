@@ -1,8 +1,9 @@
 ;;;; Inspect the find-call-by-stream-id function
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Usage: sbcl --load inspect-function.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Function definition:~%")
 (format t "~A~%" (function-lambda-expression #'clgrpc.client::find-call-by-stream-id))

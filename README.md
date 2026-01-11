@@ -42,22 +42,32 @@ Unlike other implementations, clgrpc has zero gRPC-specific external dependencie
 ```bash
 # Clone the repository
 git clone https://github.com/yourusername/clgrpc.git ~/Code/clgrpc
-cd ~/Code/clgrpc
 
-# Install dependencies (one-time setup)
-sbcl --eval '(ql:quickload :usocket)' \
-     --eval '(ql:quickload :cl+ssl)' \
-     --eval '(ql:quickload :bordeaux-threads)' \
-     --eval '(ql:quickload :babel)' \
-     --quit
+# Make it available to Quicklisp (choose one):
 
-# Load and test the system
-sbcl --eval '(asdf:load-system :clgrpc)' \
-     --eval '(asdf:test-system :clgrpc)' \
-     --quit
+# Option 1: Symlink to local-projects (simplest)
+ln -s ~/Code/clgrpc ~/quicklisp/local-projects/clgrpc
+
+# Option 2: ASDF source registry (most portable)
+mkdir -p ~/.config/common-lisp/source-registry.conf.d/
+echo '(:tree "~/Code/clgrpc/")' > ~/.config/common-lisp/source-registry.conf.d/50-clgrpc.conf
 ```
 
-Expected output: `390/390 tests passing (100%)`
+Now you can load clgrpc from any Lisp session:
+
+```lisp
+;; Load the main system
+(ql:quickload :clgrpc)
+
+;; Load examples (includes HelloWorld and RouteGuide)
+(ql:quickload :clgrpc-examples)
+
+;; Run tests
+(ql:quickload :clgrpc-tests)
+(asdf:test-system :clgrpc)
+```
+
+Expected test output: `390/390 tests passing (100%)`
 
 ### Hello World Example
 
@@ -412,6 +422,14 @@ For detailed technical information, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Testing
 
+```lisp
+;; From the REPL:
+(ql:quickload :clgrpc-tests)
+(asdf:test-system :clgrpc)
+```
+
+Or from the command line:
+
 ```bash
 # Run all unit tests (390 tests)
 sbcl --load run-tests.lisp
@@ -426,6 +444,24 @@ All tests should pass with output: `390/390 tests passing (100%)`
 
 ## Examples
 
+Load the examples system and run from the REPL:
+
+```lisp
+(ql:quickload :clgrpc-examples)
+
+;; HelloWorld examples
+(clgrpc-examples:helloworld-server-main)  ; Start server (in separate terminal)
+(clgrpc-examples:helloworld-client-main)  ; Run client
+(clgrpc-examples:helloworld-stub-main)    ; Run client with generated stub
+
+;; RouteGuide examples (demonstrates all 4 RPC patterns)
+(clgrpc-examples:routeguide-server-main)       ; Handler-based server
+(clgrpc-examples:routeguide-server-clos-main)  ; CLOS-based server
+(clgrpc-examples:routeguide-client-main)       ; Client for all RPC types
+```
+
+### Example Files
+
 - **HelloWorld**: Basic unary RPC example
   - `server-clos.lisp` - CLOS-based server (recommended)
   - `client-stub.lisp` - Client stub generation (recommended)
@@ -433,7 +469,6 @@ All tests should pass with output: `390/390 tests passing (100%)`
 - **RouteGuide**: Comprehensive example demonstrating all four streaming patterns
   - `server-clos.lisp` - CLOS-based server with all RPC types (recommended)
   - `server.lisp` - Low-level handler-based server (advanced)
-  - See `CLOS-COMPARISON.md` for side-by-side comparison
   - Methods:
     - `GetFeature`: Unary RPC
     - `ListFeatures`: Server streaming RPC

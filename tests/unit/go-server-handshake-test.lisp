@@ -1,15 +1,21 @@
 ;;;; Unit test: HTTP/2 handshake with Go server
+;;;;
+;;;; Prerequisites:
+;;;;   (ql:quickload :clgrpc)
+;;;;   Go server binary must be built: cd tests/interop && ./setup.sh
+;;;; Usage: sbcl --load go-server-handshake-test.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Testing HTTP/2 handshake with Go gRPC server...~%")
+
+(defvar *server-binary*
+  (asdf:system-relative-pathname :clgrpc "tests/interop/bin/greeter_server"))
 
 ;; Start Go server as subprocess
 (format t "1. Starting Go server...~%")
 (let ((server-process (uiop:launch-program
-                       '("/home/vydd/Code/clgrpc/tests/interop/bin/greeter_server")
+                       (list (namestring *server-binary*))
                        :output :stream
                        :error-output :stream)))
   (sleep 1)  ; Give server time to start

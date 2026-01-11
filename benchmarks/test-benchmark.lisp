@@ -1,26 +1,12 @@
 ;;;; test-benchmark.lisp - Quick test of benchmark infrastructure
 ;;;;
 ;;;; Runs a short benchmark to verify everything works
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc-examples)
+;;;; Note: Requires RouteGuide server on port 50056
+;;;; Usage: sbcl --load test-benchmark.lisp
 
-;; Load Quicklisp
-(let ((quicklisp-init (merge-pathnames ".quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file quicklisp-init)
-    (load quicklisp-init)))
-
-;; Install dependencies
-(ql:quickload '(:cl+ssl :usocket :bordeaux-threads :alexandria :fast-io :babel :cl-json) :silent t)
-
-;; Add current directory to ASDF registry
-(push (make-pathname :name nil :type nil
-                     :defaults (merge-pathnames "../" *load-truename*))
-      asdf:*central-registry*)
-
-;; Load the system
-(format t "~%Loading clgrpc...~%")
-(asdf:load-system :clgrpc :verbose nil)
-
-;; Load RouteGuide definitions
-(load (merge-pathnames "../examples/routeguide/routeguide-proto.lisp" *load-truename*))
+(ql:quickload '(:clgrpc-examples :cl-json) :silent t)
 
 (in-package #:clgrpc.client)
 
@@ -32,53 +18,44 @@
   (format t "~%╔════════════════════════════════════════════════════╗~%")
   (format t "║  Benchmark Infrastructure Test                     ║~%")
   (format t "╚════════════════════════════════════════════════════╝~%")
+  (format t "~%NOTE: Requires RouteGuide server on port ~D~%" *test-port*)
 
-  ;; Start server
-  (format t "~%Starting RouteGuide server on port ~D...~%" *test-port*)
-  (load (merge-pathnames "../examples/routeguide/server-clos.lisp" *load-truename*))
+  ;; Quick unary benchmark test
+  (format t "~%Running quick unary test...~%")
 
-  (let ((server (clgrpc.server:make-server :port *test-port*))
-        (service (make-instance 'clgrpc.grpc::route-guide-service)))
-
-    ;; Load features data
-    (setf clgrpc.grpc::*route-features*
-          (clgrpc.grpc::load-features
-           (merge-pathnames "../examples/routeguide/route_guide_db.json"
-                           *load-truename*)))
-
-    (format t "Loaded ~D features~%" (length clgrpc.grpc::*route-features*))
-
-    (clgrpc.server:register-service (clgrpc.server:grpc-server-router server) service)
-    (clgrpc.server:start-server server)
-    (sleep 1)
+  (let ((channel (make-channel (format nil "localhost:~D" *test-port*) :secure nil))
+        (request-count 0)
+        (error-count 0)
+        (start-time (get-universal-time)))
 
     (unwind-protect
-         (progn
-           ;; Test unary RPC
-           (format t "~%Testing unary RPC for ~D seconds...~%" *test-duration*)
-           (let ((channel (make-channel (format nil "localhost:~D" *test-port*) :secure nil))
-                 (count 0))
-             (unwind-protect
-                  (let ((start-time (get-universal-time)))
-                    (loop while (< (- (get-universal-time) start-time) *test-duration*)
-                          do (handler-case
-                                 (let* ((point (routeguide:make-point :latitude 409146138 :longitude -746188906))
-                                        (request-bytes (clgrpc.grpc:proto-serialize point)))
-                                   (multiple-value-bind (response-bytes status status-message)
-                                       (call-unary channel "routeguide.RouteGuide" "GetFeature"
-                                                  request-bytes :timeout 5000)
-                                     (when (and status (= status clgrpc.grpc:+grpc-status-ok+))
-                                       (incf count))))
-                               (error (e)
-                                 (format t "Error: ~A~%" e)))))
-               (close-channel channel))
+         (loop while (< (- (get-universal-time) start-time) *test-duration*)
+               do (handler-case
+                      (let* ((point (routeguide:make-point :latitude 409146138 :longitude -746188906))
+                             (request-bytes (clgrpc.grpc:proto-serialize point)))
+                        (multiple-value-bind (response-bytes status status-message)
+                            (call-unary channel "routeguide.RouteGuide" "GetFeature"
+                                       request-bytes :timeout 5000)
+                          (declare (ignore response-bytes status-message))
+                          (if (and status (= status clgrpc.grpc:+grpc-status-ok+))
+                              (incf request-count)
+                              (incf error-count))))
+                    (error (e)
+                      (declare (ignore e))
+                      (incf error-count))))
+      (close-channel channel))
 
-             (format t "Completed ~D requests~%" count)
-             (format t "Rate: ~,1F req/sec~%~%" (/ count *test-duration*)))
+    (let ((req-per-sec (/ request-count *test-duration*)))
+      (format t "~%Results:~%")
+      (format t "  Requests: ~D~%" request-count)
+      (format t "  Errors: ~D~%" error-count)
+      (format t "  Requests/sec: ~,1F~%" req-per-sec)
 
-           (format t "✓ Benchmark infrastructure test passed!~%"))
+      (if (> request-count 0)
+          (format t "~%✓ Benchmark infrastructure working!~%")
+          (format t "~%✗ No successful requests - check server~%")))))
 
-      ;; Cleanup
-      (clgrpc.server:stop-server server))))
-
-(test-benchmark)
+;; Don't auto-run
+(format t "~%Test loaded. To run:~%")
+(format t "  1. Start RouteGuide server on port ~D~%" *test-port*)
+(format t "  2. Call (clgrpc.client::test-benchmark)~%")

@@ -1,8 +1,9 @@
 ;;;; Unit test: Socket read/write loopback
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Usage: sbcl --load socket-loopback-test.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Testing socket loopback (write then read)...~%")
 

@@ -1,18 +1,10 @@
 ;;;; Simple test to diagnose issues
+;;;;
+;;;; Prerequisites: (ql:quickload :clgrpc)
+;;;; Note: Requires a gRPC server running on localhost:50051
+;;;; Usage: sbcl --load test-simple.lisp
 
-(require :asdf)
-(let ((ql-init (merge-pathnames "quicklisp/setup.lisp" (user-homedir-pathname))))
-  (when (probe-file ql-init)
-    (load ql-init)))
-
-(ql:quickload :babel :verbose nil :silent t)
-(ql:quickload :bordeaux-threads :verbose nil :silent t)
-(ql:quickload :usocket :verbose nil :silent t)
-(ql:quickload :cl+ssl :verbose nil :silent t)
-(ql:quickload :alexandria :verbose nil :silent t)
-
-(push (truename "../../") asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%Testing gRPC client...~%")
 

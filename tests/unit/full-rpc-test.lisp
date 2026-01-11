@@ -1,15 +1,21 @@
 ;;;; Full RPC test with Go server - simplified and instrumented
+;;;;
+;;;; Prerequisites:
+;;;;   (ql:quickload :clgrpc)
+;;;;   Go server binary must be built: cd tests/interop && ./setup.sh
+;;;; Usage: sbcl --load full-rpc-test.lisp
 
-(require :asdf)
-(push #P"/home/vydd/Code/clgrpc/" asdf:*central-registry*)
-(asdf:load-system :clgrpc :verbose nil)
+(ql:quickload :clgrpc :silent t)
 
 (format t "~%=== Full RPC Test (HelloWorld) ===~%")
+
+(defvar *server-binary*
+  (asdf:system-relative-pathname :clgrpc "tests/interop/bin/greeter_server"))
 
 ;; Start Go server
 (format t "1. Starting Go server...~%")
 (let ((server (uiop:launch-program
-               '("/home/vydd/Code/clgrpc/tests/interop/bin/greeter_server")
+               (list (namestring *server-binary*))
                :output :stream :error-output :stream)))
   (sleep 1)
   (format t "   Server PID: ~A~%~%" (uiop:process-info-pid server))
