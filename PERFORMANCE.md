@@ -1,209 +1,60 @@
-# Performance Benchmarks
+# Performance Results
 
-## Overview
+## Current Status (After Optimizations)
 
-Comprehensive performance testing of the Common Lisp gRPC implementation, measuring throughput (requests per second) across different RPC patterns and concurrency levels.
+### Sequential Performance (1 Client, 10 Requests)
 
-## Test Configuration
+**Before Optimizations:**
+- Request 1: 54ms
+- Requests 2-10: ~41ms each
+- Average: ~42ms per request
+- Rate: ~24 req/sec
 
-- **Test Duration**: 5 seconds per test
-- **RPC Types**: Unary, Server Streaming, Client Streaming, Bidirectional Streaming
-- **Concurrency Levels**: 1, 10, 100 concurrent clients
-- **Service**: RouteGuide (official gRPC example)
-- **Platform**: SBCL on Linux
+**After Optimizations:**
+- Request 1: 19.5ms  
+- Requests 2-10: ~350-400µs each
+- Average: ~2.3ms per request  
+- Rate: ~435 req/sec
 
-## Results
+**Improvement: 18x faster overall, 100x faster for subsequent requests**
 
-### Unary RPC Performance
+## Optimizations Applied
 
-| Clients | Requests/sec | Scaling Factor |
-|---------|--------------|----------------|
-| 1       | 10.8         | 1x (baseline)  |
-| 10      | 120          | 11x            |
-| 100     | 1,180        | 109x           |
+### 1. Fixed HPACK Pseudo-Header Bug
+**Problem:** Dynamic table stored pseudo-headers (`:path`, `:method`, etc.) as lowercase strings but didn't convert them back to keywords when retrieved.
 
-**Analysis**:
-- Excellent near-linear scaling with concurrency
-- 10 clients: 11x throughput (110% scaling efficiency)
-- 100 clients: 109x throughput (109% scaling efficiency)
-- Validates thread-safe implementation
-- No significant contention even at 100 concurrent clients
+**Impact:** 99% error rate → 0% errors (made server functional)
 
-### Scaling Characteristics
+**Fix:** Added `denormalize-header-name` function in `src/http2/hpack.lisp`
 
-The implementation shows **excellent concurrency scaling**:
+### 2. Batched Frame Writes  
+**Problem:** Flushing after every single HTTP/2 frame (3 flushes per unary RPC: HEADERS, DATA, TRAILERS)
 
-```
-Throughput vs Concurrency
+**Impact:** 17% improvement for single client (24 → 28 rps)
 
-1200 ┤                                                    ●
-1000 ┤
- 800 ┤
- 600 ┤
- 400 ┤
- 200 ┤         ●
-  10 ┤●
-     └─────────────────────────────────────────────────────
-       1        10                                      100
-                    Concurrent Clients
-```
+**Fix:** Modified `write-frame-to-stream` to support batching, updated `server-send-response` to batch all 3 frames with single flush
 
-**Key Observations**:
-1. **Linear scaling**: Throughput increases proportionally with clients
-2. **No plateau**: No performance degradation up to 100 clients
-3. **Thread efficiency**: Minimal overhead from thread management
-4. **Stable latency**: Consistent per-request performance across loads
+### 3. TCP_NODELAY ⭐ **MASSIVE WIN**
+**Problem:** Nagle's algorithm + delayed ACK interaction caused 40ms delay per response
 
-### Performance Characteristics
+**Impact:** 100x improvement on subsequent requests (41ms → 0.35ms)
 
-**Single Client (1 concurrent)**:
-- Throughput: 10.8 req/sec
-- Represents baseline with no concurrency overhead
-- Includes full round-trip: serialization, network, deserialization
-- Unoptimized single-threaded performance
+**Fix:** Set `TCP_NODELAY` on all sockets (client and server) in `src/transport/socket.lisp`
 
-**Medium Concurrency (10 concurrent)**:
-- Throughput: 120 req/sec
-- 11x improvement demonstrates good thread pool utilization
-- Request rate per client: 12 req/sec (increased due to pipelining)
+## Comparison with Go Server
 
-**High Concurrency (100 concurrent)**:
-- Throughput: 1,180 req/sec
-- Near-perfect scaling (109x instead of 100x)
-- Demonstrates:
-  - Effective thread management
-  - Minimal lock contention
-  - Efficient HTTP/2 multiplexing
-  - No resource exhaustion
+**Go Server (Sequential, 1 Client):**
+- Request 1: 2.2ms
+- Requests 2-10: 100-200µs
 
-## Comparison with Go
+**CL Server (Sequential, 1 Client):**  
+- Request 1: 19.5ms
+- Requests 2-10: 350-400µs
 
-### Expected Performance (based on similar implementations)
+**Gap:** CL is still 2-4x slower, but vastly improved from original 40ms delay
 
-| RPC Type     | CL (100 clients) | Go (100 clients) | Ratio  |
-|--------------|------------------|------------------|--------|
-| Unary        | ~1,200 req/s     | ~15,000 req/s    | ~8%    |
-| Streaming    | TBD              | TBD              | TBD    |
+## Next Steps
 
-**Note**: Direct Go comparison pending. The ~8% figure is based on initial unary RPC results and typical interpreted vs compiled performance differences.
-
-### Why the Performance Difference?
-
-**Go Advantages**:
-1. **Compiled native code** vs interpreted/JIT (SBCL does JIT but different optimization profile)
-2. **Highly optimized goroutines** (lightweight threads)
-3. **Specialized HTTP/2 implementation** (net/http2)
-4. **Years of production optimization**
-
-**CL Strengths**:
-1. **Excellent scaling characteristics** (linear scaling achieved)
-2. **Predictable performance** (no GC pauses visible in tests)
-3. **Full-featured implementation** (all RPC types supported)
-4. **Type safety and clarity** (CLOS-based design)
-
-### Optimization Opportunities
-
-Areas for potential improvement:
-1. **I/O Buffering**: Tune buffer sizes (currently 8KB)
-2. **HPACK Optimization**: Cache encoding results
-3. **Thread Pool Tuning**: Optimize worker thread count
-4. **Type Declarations**: Add more type hints in hot paths
-5. **Memory Allocation**: Reduce consing in frame processing
-
-## Testing Concurrent Correctness
-
-Beyond performance, we verified **thread safety** and **correctness**:
-
-### Concurrent Correctness Test
-
-```
-Test: 10 concurrent clients × 5 requests = 50 total requests
-Result: 50/50 succeeded (100%)
-Duration: < 1 second
-Errors: 0
-```
-
-**Validated**:
-- ✓ No race conditions
-- ✓ Proper stream isolation
-- ✓ Correct status codes
-- ✓ Complete responses
-- ✓ Clean connection handling
-- ✓ No memory leaks
-
-## Benchmark Usage
-
-### Running Benchmarks
-
-```bash
-# Common Lisp benchmark (auto-starts server)
-cd benchmarks
-sbcl --script benchmark-cl-fixed.lisp
-
-# Results saved to results-cl.json
-```
-
-### Full Suite (with Go comparison)
-
-```bash
-# See benchmarks/README.md for complete instructions
-cd benchmarks
-./run-benchmark.sh
-```
-
-This generates:
-- `results-cl.json` - CL performance data
-- `results-go.json` - Go performance data (if Go benchmark run)
-- Comparison graphs (if both datasets available)
-
-## Production Readiness
-
-Based on benchmark results:
-
-**✓ Ready for Production Use**:
-- Correct concurrent behavior verified
-- Predictable scaling characteristics
-- Stable under high load (100 concurrent clients)
-- No resource leaks detected
-
-**Performance Considerations**:
-- Throughput: ~1,200 unary req/sec (100 clients)
-- Good for: APIs, microservices, internal services
-- May need optimization for: Ultra-high throughput scenarios (>10k req/sec)
-
-**Recommended Use Cases**:
-1. **Internal microservices**: Excellent for service-to-service communication
-2. **API gateways**: Good throughput for most API workloads
-3. **Data pipelines**: Streaming support for continuous data flows
-4. **Dev/Test environments**: Full gRPC compatibility
-
-## Conclusion
-
-The Common Lisp gRPC implementation demonstrates:
-
-1. **Excellent Scaling**: Near-linear throughput increase with concurrency
-2. **Thread Safety**: Zero errors across thousands of concurrent requests
-3. **Production Readiness**: Stable under high concurrent load
-4. **Full Feature Set**: All 4 RPC patterns supported
-
-While absolute throughput is lower than Go (expected for interpreted vs compiled), the **scaling characteristics are excellent**, making it suitable for most production workloads where ultra-high throughput isn't the primary requirement.
-
-The implementation prioritizes:
-- ✓ Correctness
-- ✓ Clarity
-- ✓ Completeness
-- ✓ Maintainability
-
-And achieves good performance through:
-- ✓ Efficient HTTP/2 implementation
-- ✓ Smart concurrency model
-- ✓ Minimal lock contention
-- ✓ Clean architecture
-
-## Future Work
-
-1. **Complete streaming benchmarks**: Measure client/server/bidi streaming
-2. **Go comparison**: Run full comparison suite
-3. **Generate visualizations**: Create performance graphs
-4. **Profile hot paths**: Identify optimization opportunities
-5. **Platform testing**: Test on different Common Lisp implementations
+- Profile remaining overhead (first request: 19ms vs 2ms)
+- Test and optimize concurrent request handling
+- Investigate connection pooling and reuse
