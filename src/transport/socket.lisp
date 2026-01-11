@@ -14,6 +14,20 @@
   port             ; Remote port
   timeout)         ; I/O timeout in seconds
 
+;;; Socket options
+
+(defun set-tcp-nodelay (socket)
+  "Set TCP_NODELAY on socket to disable Nagle's algorithm.
+   This prevents 40ms delays from delayed ACK + Nagle interaction."
+  #+sbcl
+  (handler-case
+      (let ((usock (tcp-socket-usocket socket)))
+        (setf (sb-bsd-sockets:sockopt-tcp-nodelay (usocket:socket usock)) t))
+    (error (e)
+      (warn "Failed to set TCP_NODELAY: ~A" e)))
+  #-sbcl
+  (warn "TCP_NODELAY not implemented for this Lisp"))
+
 ;;; Socket creation and connection
 
 (defun make-tcp-connection (host port &key (timeout 30))
@@ -31,12 +45,15 @@
                                            :element-type '(unsigned-byte 8)
                                            :timeout timeout))
              (stream (usocket:socket-stream usock)))
-        (make-tcp-socket
-         :usocket usock
-         :stream stream
-         :host host
-         :port port
-         :timeout timeout))
+        (let ((tcp-sock (make-tcp-socket
+                         :usocket usock
+                         :stream stream
+                         :host host
+                         :port port
+                         :timeout timeout)))
+          ;; Set TCP_NODELAY to disable Nagle's algorithm
+          (set-tcp-nodelay tcp-sock)
+          tcp-sock))
     (error (e)
       (error "Failed to connect to ~A:~D: ~A" host port e))))
 
@@ -76,12 +93,15 @@
              (stream (usocket:socket-stream client-sock))
              (peer-host (usocket:get-peer-address client-sock))
              (peer-port (usocket:get-peer-port client-sock)))
-        (make-tcp-socket
-         :usocket client-sock
-         :stream stream
-         :host (usocket:vector-quad-to-dotted-quad peer-host)
-         :port peer-port
-         :timeout nil))
+        (let ((tcp-sock (make-tcp-socket
+                         :usocket client-sock
+                         :stream stream
+                         :host (usocket:vector-quad-to-dotted-quad peer-host)
+                         :port peer-port
+                         :timeout nil)))
+          ;; Set TCP_NODELAY to disable Nagle's algorithm
+          (set-tcp-nodelay tcp-sock)
+          tcp-sock))
     (error (e)
       (error "Failed to accept connection: ~A" e))))
 
