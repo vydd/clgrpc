@@ -142,12 +142,13 @@
      message-bytes: Serialized protobuf message
 
    This does NOT close the send side - use stream-close-send for that."
+  ;; Start stream if needed (must be outside send lock to avoid recursive lock)
+  (unless (grpc-stream-headers-sent stream)
+    (stream-start stream))
+
   (bordeaux-threads:with-lock-held ((grpc-stream-send-lock stream))
     (when (grpc-stream-send-closed stream)
       (error "Stream send side already closed"))
-
-    (unless (grpc-stream-headers-sent stream)
-      (stream-start stream))
 
     ;; Send DATA frame without END_STREAM
     (let* ((conn (grpc-stream-connection stream))

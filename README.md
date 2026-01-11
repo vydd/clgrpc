@@ -297,6 +297,68 @@ For fine-grained control, you can use the low-level handler API:
                   :rpc-type :unary)
 ```
 
+### Quick Test Server (for Development/Testing)
+
+Need a minimal server for testing with grpcurl or other clients? Here's the simplest way:
+
+```lisp
+;; Load clgrpc
+(ql:quickload :clgrpc)
+
+;; Create and start server
+(defparameter *server* (clgrpc.server:make-server :port 50051))
+
+;; Define a simple echo handler (works with raw bytes)
+(clgrpc.server:register-handler
+  (clgrpc.server:grpc-server-router *server*)
+  "test.EchoService"          ; Service name
+  "Echo"                       ; Method name
+  (clgrpc.server:lambda-handler
+    ;; Just echo the request bytes back
+    (values request-bytes      ; response
+            0                  ; status: OK
+            nil                ; status message
+            nil))              ; response metadata
+  :unary)
+
+;; Add a second method that returns a hardcoded response
+(clgrpc.server:register-handler
+  (clgrpc.server:grpc-server-router *server*)
+  "test.EchoService"
+  "SayHello"
+  (clgrpc.server:lambda-handler
+    (values (babel:string-to-octets "Hello from Lisp!")
+            0 nil nil))
+  :unary)
+
+;; Register reflection so grpcurl can discover your service
+(clgrpc.server:register-reflection-service *server*)
+
+;; Start the server
+(clgrpc.server:start-server *server*)
+```
+
+Test with grpcurl:
+```bash
+# List all services
+grpcurl -plaintext localhost:50051 list
+
+# Should show:
+# grpc.reflection.v1alpha.ServerReflection
+# test.EchoService
+
+# List methods of your service
+grpcurl -plaintext localhost:50051 list test.EchoService
+```
+
+**When to use this approach:**
+- ✅ Quick testing in the REPL
+- ✅ Prototyping new services
+- ✅ Testing gRPC clients
+- ✅ Debugging with grpcurl
+
+**For production use:** Use the CLOS API (shown above) for type safety and automatic serialization.
+
 ### Streaming RPCs
 
 clgrpc supports all four gRPC streaming patterns with the CLOS API:

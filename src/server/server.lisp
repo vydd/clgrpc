@@ -542,18 +542,26 @@
   (handler-case
       (progn
         ;; Dispatch to appropriate handler method
-        (multiple-value-bind (status-code status-message response-metadata)
-            (ecase rpc-type
-              (:client-streaming
-               (handle-client-streaming handler service method stream context))
-              (:bidirectional
-               (handle-bidirectional-streaming handler service method stream context)))
-
-          (debug-log "SERVER: Streaming handler returned status=~D~%"
-                  status-code)
-
-          ;; Close stream with status
-          (server-stream-close stream status-code status-message response-metadata)))
+        (ecase rpc-type
+          (:client-streaming
+           ;; Client streaming returns 4 values: response-bytes, status, message, metadata
+           (multiple-value-bind (response-bytes status-code status-message response-metadata)
+               (handle-client-streaming handler service method stream context)
+             (debug-log "SERVER: Client-streaming handler returned status=~D~%"
+                        status-code)
+             ;; Send response if provided
+             (when response-bytes
+               (server-stream-send stream response-bytes))
+             ;; Close stream with status
+             (server-stream-close stream status-code status-message response-metadata)))
+          (:bidirectional
+           ;; Bidirectional returns 3 values: status, message, metadata
+           (multiple-value-bind (status-code status-message response-metadata)
+               (handle-bidirectional-streaming handler service method stream context)
+             (debug-log "SERVER: Bidirectional handler returned status=~D~%"
+                        status-code)
+             ;; Close stream with status
+             (server-stream-close stream status-code status-message response-metadata)))))
 
     (error (e)
       ;; Error in handler - send INTERNAL error
