@@ -50,3 +50,10 @@ go.work.sum
 # Test artifacts
 *.log
 *.out
+
+# Benchmark binaries and results
+benchmarks/bench-*
+benchmarks/test-degradation
+benchmarks/test-loop
+benchmarks/results-*.json
+benchmarks/*.out
