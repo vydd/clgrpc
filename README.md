@@ -20,6 +20,7 @@ Unlike other implementations, clgrpc has zero gRPC-specific external dependencie
 
 - ✅ **Complete gRPC Implementation**: All four RPC patterns supported
 - ✅ **CLOS-based Service API**: Type-safe, automatic serialization, clean syntax matching Go/Python gRPC
+- ✅ **Client Stub Generation**: Automatic type-safe client generation from service definitions
 - ✅ **CLOS Protocol Buffers**: Proto3 messages as CLOS objects with metaclass
 - ✅ **Full HTTP/2**: HPACK compression, Huffman encoding, stream multiplexing, flow control
 - ✅ **Code Generation**: .proto file parser and CLOS code generator (~640 lines)
@@ -90,7 +91,25 @@ Expected output: `390/390 tests passing (100%)`
   (loop (sleep 1)))  ; Keep running
 ```
 
-**Client (CLOS API):**
+**Client (with Stub - Recommended):**
+```lisp
+(use-package :clgrpc.client)
+(use-package :clgrpc.grpc)
+
+;; Generate type-safe stub from server service definition
+(defstub greeter-stub clgrpc.grpc::greeter-service)
+
+;; Create a channel and make calls
+(let ((channel (make-channel "localhost:50051" :secure nil)))
+  (unwind-protect
+       (let ((stub (make-instance 'greeter-stub :channel channel)))
+         ;; Clean syntax - automatic serialization!
+         (let ((reply (say-hello stub (make-hello-request :name "World"))))
+           (format t "Response: ~A~%" (hello-reply-message reply))))
+    (close-channel channel)))
+```
+
+**Client (Low-Level API):**
 ```lisp
 (use-package :clgrpc.client)
 (use-package :clgrpc.grpc)
@@ -110,12 +129,12 @@ Expected output: `390/390 tests passing (100%)`
 ```
 
 **Key Features of CLOS API:**
-- ✅ No manual string matching - type-safe dispatch
-- ✅ Automatic request deserialization
-- ✅ Automatic response serialization (for unary RPCs)
-- ✅ Smart defaults: `say-hello` → `"SayHello"`, `:unary` default
-- ✅ Single registration call per service
-- ✅ Clean, minimal syntax matching Go/Python gRPC
+- ✅ **Client Stubs**: Automatic generation from service definitions
+- ✅ **Type-Safe**: No manual string matching - compile-time dispatch
+- ✅ **Automatic Serialization**: Both client and server handle serialization
+- ✅ **Smart Defaults**: `say-hello` → `"SayHello"`, `:unary` default
+- ✅ **Single Registration**: One call per service registers all methods
+- ✅ **Clean Syntax**: Matching Go/Python gRPC style
 
 ## Requirements
 
@@ -146,6 +165,44 @@ Test dependencies:
 ## Usage
 
 ### Creating a Client
+
+**With Client Stubs (Recommended):**
+
+Client stubs provide automatic type-safe client generation from service definitions:
+
+```lisp
+(use-package :clgrpc.client)
+(use-package :clgrpc.grpc)
+
+;; Generate a stub from a CLOS service definition
+;; This introspects the service class and generates type-safe methods
+(defstub my-service-stub clgrpc.grpc::my-service)
+
+;; Create a channel and stub instance
+(defvar *channel* (make-channel "localhost:50051" :secure nil))
+(defvar *stub* (make-instance 'my-service-stub :channel *channel*))
+
+;; Make calls with automatic serialization - clean syntax!
+(let ((response (my-method *stub*
+                           (make-my-request :field "value")
+                           :timeout 5000
+                           :metadata '(("custom-header" . "value")))))
+  (format t "Result: ~A~%" (my-response-result response)))
+
+;; Always close the channel when done
+(close-channel *channel*)
+```
+
+**Key Benefits of Stubs:**
+- ✅ Type-safe method calls - no string names
+- ✅ Automatic serialization/deserialization
+- ✅ Compile-time method validation
+- ✅ Clean, idiomatic syntax
+- ✅ Works with any CLOS service definition
+
+**Low-Level Client API:**
+
+For advanced use cases, you can use the low-level API directly:
 
 ```lisp
 (use-package :clgrpc.client)
@@ -331,6 +388,8 @@ clgrpc is built in layers, from low-level networking to high-level gRPC APIs:
 
 ```
 ┌─────────────────────────────────────────┐
+│    Client Stubs (defstub) + CLOS API   │ ← Type-safe, auto-serialization
+├─────────────────────────────────────────┤
 │         gRPC Client/Server API          │ ← call-unary, register-handler
 ├─────────────────────────────────────────┤
 │      gRPC Protocol Layer                │ ← Message framing, status codes
@@ -369,6 +428,7 @@ All tests should pass with output: `390/390 tests passing (100%)`
 
 - **HelloWorld**: Basic unary RPC example
   - `server-clos.lisp` - CLOS-based server (recommended)
+  - `client-stub.lisp` - Client stub generation (recommended)
   - `client-clos.lisp` - CLOS-based client with message API
 - **RouteGuide**: Comprehensive example demonstrating all four streaming patterns
   - `server-clos.lisp` - CLOS-based server with all RPC types (recommended)
@@ -389,6 +449,7 @@ See the `examples/` directory for complete working examples.
 - ✅ Complete Protocol Buffers implementation
 - ✅ Full gRPC protocol support
 - ✅ Client and server with all RPC patterns
+- ✅ Client stub generation from service definitions
 - ✅ Full interoperability with official gRPC
 
 ### Upcoming (v1.0)

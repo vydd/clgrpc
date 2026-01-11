@@ -39,6 +39,22 @@
     :documentation "Hash table mapping lisp method names to grpc-method-info"))
   (:documentation "Metaclass for gRPC service classes"))
 
+;; Initialize the metaclass and extract class options
+(defmethod initialize-instance :after ((class grpc-service-metaclass) &rest initargs &key service-name package &allow-other-keys)
+  "Extract service-name and package from class options and store them properly."
+  (when service-name
+    ;; service-name might be a list like ("helloworld.Greeter") - extract the string
+    (setf (slot-value class 'service-name)
+          (if (listp service-name)
+              (first service-name)  ; Extract the string from the list
+              service-name)))       ; Already a string
+  (when package
+    ;; Same for package
+    (setf (slot-value class 'package-name)
+          (if (listp package)
+              (first package)
+              package))))
+
 ;; Explicit accessor methods for metaclass slots
 (defmethod service-name ((metaclass grpc-service-metaclass))
   (slot-value metaclass 'service-name))

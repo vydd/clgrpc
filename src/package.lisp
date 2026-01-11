@@ -515,7 +515,14 @@
    #:client-call
    #:send-message
    #:receive-message
-   #:close-send))
+   #:close-send
+
+   ;; Client stubs
+   #:grpc-stub
+   #:stub-channel
+   #:defstub
+   #:make-stub-from-proto-file
+   #:call-unary-auto))
 
 (defpackage #:clgrpc.server
   (:documentation "gRPC server implementation")
