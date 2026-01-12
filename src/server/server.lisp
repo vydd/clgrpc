@@ -649,11 +649,12 @@
             ;; Send initial response headers
             (server-send-initial-headers connection stream-id)
 
-            ;; Create context
+            ;; Create context with deadline
             (let ((context (make-handler-context
                             :stream-id stream-id
                             :connection connection
-                            :metadata headers)))
+                            :metadata headers
+                            :deadline (parse-deadline-from-headers headers))))
 
               ;; Spawn handler thread
               (bordeaux-threads:make-thread
@@ -667,11 +668,12 @@
             (multiple-value-bind (handler service method rpc-type)
                 (route-request (grpc-server-router server) path)
 
-              ;; Create handler context
+              ;; Create handler context with deadline
               (let ((context (make-handler-context
                               :stream-id stream-id
                               :connection connection
-                              :metadata headers)))
+                              :metadata headers
+                              :deadline (parse-deadline-from-headers headers))))
 
                 ;; Spawn thread to handle request (allows concurrent requests)
                 (bordeaux-threads:make-thread
@@ -696,6 +698,15 @@
 
   (debug-log "SERVER: Calling handler service=~A method=~A rpc-type=~A request-len=~D~%"
           service method rpc-type (length request-bytes))
+
+  ;; Check deadline before processing
+  (when (deadline-exceeded-p context)
+    (debug-log "SERVER: Deadline already exceeded before handler started~%")
+    (server-send-response connection stream-id
+                         nil +grpc-status-deadline-exceeded+
+                         "Deadline exceeded before processing could begin"
+                         nil)
+    (return-from server-handle-request))
 
   (handler-case
       (ecase rpc-type

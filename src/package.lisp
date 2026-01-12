@@ -559,6 +559,12 @@
    #:handle-bidirectional-streaming
    #:handler-context
    #:get-stream
+   #:lambda-handler
+
+   ;; Deadline/timeout support
+   #:deadline-exceeded-p
+   #:time-remaining-ms
+   #:get-deadline
 
    ;; Server streaming operations
    #:grpc-server-stream

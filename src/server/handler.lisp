@@ -15,11 +15,78 @@
   (cancelled nil :type boolean)
   (grpc-stream nil))               ; grpc-server-stream for streaming RPCs
 
+(defun parse-deadline-from-headers (headers)
+  "Parse grpc-timeout header and return deadline in internal time units.
+
+   Args:
+     headers: Alist of headers
+
+   Returns:
+     Deadline in internal time units, or NIL if no grpc-timeout header"
+  (let ((timeout-str (or (cdr (assoc "grpc-timeout" headers :test #'string=))
+                         (cdr (assoc :grpc-timeout headers)))))
+    (when timeout-str
+      (let ((timeout-ms (decode-grpc-timeout timeout-str)))
+        ;; Calculate deadline: current time + timeout
+        (+ (get-internal-real-time)
+           (* timeout-ms (/ internal-time-units-per-second 1000)))))))
+
 (defun get-stream (context)
   "Get the gRPC stream from a handler context.
 
    Returns the grpc-server-stream for streaming RPCs, or nil for unary RPCs."
   (handler-context-grpc-stream context))
+
+(defun deadline-exceeded-p (context)
+  "Check if the request deadline has been exceeded.
+
+   Args:
+     context: handler-context
+
+   Returns:
+     T if deadline exceeded, NIL otherwise
+
+   Usage:
+     (when (deadline-exceeded-p context)
+       (return (values nil +grpc-status-deadline-exceeded+ \"Deadline exceeded\" nil)))"
+  (let ((deadline (handler-context-deadline context)))
+    (and deadline
+         (>= (get-internal-real-time) deadline))))
+
+(defun time-remaining-ms (context)
+  "Get remaining time until deadline in milliseconds.
+
+   Args:
+     context: handler-context
+
+   Returns:
+     Remaining milliseconds, or NIL if no deadline set
+
+   Usage:
+     (let ((remaining (time-remaining-ms context)))
+       (when (and remaining (< remaining 1000))
+         (format t \"Warning: Only ~Dms remaining!~%\" remaining)))"
+  (let ((deadline (handler-context-deadline context)))
+    (when deadline
+      (let ((remaining-internal (- deadline (get-internal-real-time))))
+        (if (< remaining-internal 0)
+            0
+            (floor (* remaining-internal 1000) internal-time-units-per-second))))))
+
+(defun get-deadline (context)
+  "Get the request deadline from context.
+
+   Args:
+     context: handler-context
+
+   Returns:
+     Deadline in internal time units, or NIL if no deadline
+
+   Usage:
+     (let ((deadline (get-deadline context)))
+       (when deadline
+         (format t \"Deadline: ~D~%\" deadline)))"
+  (handler-context-deadline context))
 
 ;;; Unary Handler Protocol
 
