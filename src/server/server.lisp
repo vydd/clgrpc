@@ -17,7 +17,16 @@
   (connections (make-array 0 :adjustable t :fill-pointer 0))
   (lock (bordeaux-threads:make-lock "server-lock"))
   (shutdown-cv (bordeaux-threads:make-condition-variable :name "shutdown-cv"))
-  (listener-thread nil))
+  (listener-thread nil)
+
+  ;; Resource limits (matching grpc-go defaults)
+  (max-recv-msg-size (* 4 1024 1024) :type fixnum)      ; 4MB (grpc-go default)
+  (max-send-msg-size most-positive-fixnum :type fixnum) ; Unlimited (grpc-go default)
+  (max-concurrent-streams 100 :type fixnum)             ; Per connection (typical default)
+  (max-header-list-size 16384 :type fixnum)             ; 16KB (HTTP/2 default)
+  (max-connections 0 :type fixnum)                      ; 0 = unlimited (not in grpc-go, our bonus)
+  (keepalive-time 7200 :type fixnum)                    ; 2 hours idle timeout (seconds)
+  (keepalive-timeout 20 :type fixnum))                  ; 20s ping timeout (seconds)
 
 ;;; Per-stream request state
 (defstruct server-stream-state
@@ -35,17 +44,55 @@
 
 ;;; Server Lifecycle
 
-(defun make-server (&key (port 50051))
-  "Create a new gRPC server.
+(defun make-server (&key
+                     (port 50051)
+                     (max-recv-msg-size (* 4 1024 1024))
+                     (max-send-msg-size most-positive-fixnum)
+                     (max-concurrent-streams 100)
+                     (max-header-list-size 16384)
+                     (max-connections 0)
+                     (keepalive-time 7200)
+                     (keepalive-timeout 20))
+  "Create a new gRPC server with optional resource limits.
+
+   All arguments are optional with sensible defaults matching grpc-go.
 
    Args:
      port: Port to listen on (default: 50051)
+     max-recv-msg-size: Maximum message size to receive in bytes (default: 4MB, grpc-go default)
+     max-send-msg-size: Maximum message size to send in bytes (default: unlimited, grpc-go default)
+     max-concurrent-streams: Maximum concurrent streams per connection (default: 100)
+     max-header-list-size: Maximum header list size in bytes (default: 16KB, HTTP/2 default)
+     max-connections: Maximum total connections (default: 0 = unlimited, not in grpc-go)
+     keepalive-time: Idle connection timeout in seconds (default: 7200 = 2 hours)
+     keepalive-timeout: Ping timeout in seconds (default: 20)
 
    Returns:
-     grpc-server"
+     grpc-server
+
+   Example:
+     ;; Simple server with all defaults
+     (make-server)
+
+     ;; Custom port
+     (make-server :port 8080)
+
+     ;; Tighter limits for public-facing server
+     (make-server :port 443
+                  :max-recv-msg-size (* 1 1024 1024)    ; 1MB
+                  :max-concurrent-streams 50
+                  :max-connections 1000
+                  :keepalive-time 300)                  ; 5 minutes"
   (make-grpc-server
    :port port
-   :router (make-router)))
+   :router (make-router)
+   :max-recv-msg-size max-recv-msg-size
+   :max-send-msg-size max-send-msg-size
+   :max-concurrent-streams max-concurrent-streams
+   :max-header-list-size max-header-list-size
+   :max-connections max-connections
+   :keepalive-time keepalive-time
+   :keepalive-timeout keepalive-timeout))
 
 (defun start-server (server)
   "Start the gRPC server (begin listening for connections).
@@ -204,6 +251,14 @@
     (ignore-errors (usocket:socket-close client-socket))
     (return-from server-handle-connection nil))
 
+  ;; Enforce max connections limit (if set)
+  (let ((max-conns (grpc-server-max-connections server)))
+    (when (and (> max-conns 0)  ; 0 means unlimited
+               (>= (length (grpc-server-connections server)) max-conns))
+      (debug-log "Rejecting new connection (max connections ~D reached)~%" max-conns)
+      (ignore-errors (usocket:socket-close client-socket))
+      (return-from server-handle-connection nil)))
+
   ;; Wrap socket with buffering for efficient HTTP/2 frame I/O
   (let ((buffered-socket (clgrpc.transport:wrap-socket-with-buffer client-socket)))
 
@@ -320,11 +375,46 @@
      connection: http2-connection
      frame: http2-frame with HEADERS"
   (let* ((stream-id (frame-stream-id frame))
-         (decoder-ctx (http2-connection-hpack-decoder connection))
-         (headers (hpack-decode-headers decoder-ctx (frame-payload frame)))
-         (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
+         (payload (frame-payload frame))
+         (decoder-ctx (http2-connection-hpack-decoder connection)))
 
-    (debug-log "SERVER: HEADERS stream=~D end-stream=~A~%" stream-id end-stream)
+    ;; Check header list size limit
+    (when (> (length payload) (grpc-server-max-header-list-size server))
+      (debug-log "SERVER: Header list size ~D exceeds limit ~D~%"
+                (length payload) (grpc-server-max-header-list-size server))
+      ;; Send PROTOCOL_ERROR and close connection
+      (connection-send-goaway connection stream-id +http2-error-protocol-error+
+                             (babel:string-to-octets
+                              (format nil "Header list size ~D exceeds limit ~D bytes"
+                                      (length payload)
+                                      (grpc-server-max-header-list-size server))))
+      (return-from server-handle-headers-frame nil))
+
+    ;; Check max concurrent streams limit
+    (let ((active-streams (hash-table-count (http2-connection-active-calls connection))))
+      (when (>= active-streams (grpc-server-max-concurrent-streams server))
+        (debug-log "SERVER: Max concurrent streams ~D reached~%"
+                  (grpc-server-max-concurrent-streams server))
+        ;; Send REFUSED_STREAM error
+        (let ((rst-frame (make-http2-frame
+                          :length 4
+                          :type +frame-type-rst-stream+
+                          :flags 0
+                          :stream-id stream-id
+                          :payload (let ((buf (make-byte-array 4)))
+                                    (setf (aref buf 0) 0
+                                          (aref buf 1) 0
+                                          (aref buf 2) 0
+                                          (aref buf 3) +http2-error-refused-stream+)
+                                    buf))))
+          (write-frame-to-stream rst-frame (http2-connection-socket connection)))
+        (return-from server-handle-headers-frame nil)))
+
+    ;; Decode headers
+    (let ((headers (hpack-decode-headers decoder-ctx payload))
+          (end-stream (logtest (frame-flags frame) +flag-end-stream+)))
+
+      (debug-log "SERVER: HEADERS stream=~D end-stream=~A~%" stream-id end-stream)
 
     ;; Extract path to determine RPC type
     (let ((path (or (cdr (assoc :path headers))
@@ -400,7 +490,7 @@
 
              ;; If END_STREAM, request is complete (headers-only request)
              (when end-stream
-               (server-process-complete-request server connection stream-id stream-state))))))))
+               (server-process-complete-request server connection stream-id stream-state)))))))))
 
 (defun server-handle-data-frame (server connection frame)
   "Handle DATA frame - request body.
@@ -434,6 +524,18 @@
                    (decode-grpc-message data)
                  (declare (ignore compressed total-read))
 
+                 ;; Check max message size limit for streaming
+                 (when (> (length message-bytes) (grpc-server-max-recv-msg-size server))
+                   (debug-log "SERVER: Streaming message size ~D exceeds limit ~D~%"
+                             (length message-bytes) (grpc-server-max-recv-msg-size server))
+                   ;; Close stream with error
+                   (server-stream-close stream-state +grpc-status-resource-exhausted+
+                                       (format nil "Message size ~D exceeds limit ~D bytes"
+                                               (length message-bytes)
+                                               (grpc-server-max-recv-msg-size server))
+                                       nil)
+                   (return-from server-handle-data-frame nil))
+
                  (debug-log "SERVER: Decoded message (~D bytes), adding to queue~%"
                          (length message-bytes))
 
@@ -453,13 +555,35 @@
            (if (server-stream-state-data stream-state)
                ;; Append to existing data
                (let* ((existing (server-stream-state-data stream-state))
-                      (new-len (+ (length existing) (length data)))
-                      (result (make-byte-array new-len)))
-                 (replace result existing)
-                 (replace result data :start1 (length existing))
-                 (setf (server-stream-state-data stream-state) result))
-               ;; First data chunk
-               (setf (server-stream-state-data stream-state) (copy-seq data)))
+                      (new-len (+ (length existing) (length data))))
+                 ;; Check max message size limit
+                 (when (> new-len (grpc-server-max-recv-msg-size server))
+                   (debug-log "SERVER: Message size ~D exceeds limit ~D~%"
+                             new-len (grpc-server-max-recv-msg-size server))
+                   ;; Send error and close stream
+                   (server-send-response connection stream-id
+                                        nil +grpc-status-resource-exhausted+
+                                        (format nil "Message size ~D exceeds limit ~D bytes"
+                                                new-len (grpc-server-max-recv-msg-size server))
+                                        nil)
+                   (return-from server-handle-data-frame nil))
+
+                 (let ((result (make-byte-array new-len)))
+                   (replace result existing)
+                   (replace result data :start1 (length existing))
+                   (setf (server-stream-state-data stream-state) result)))
+               ;; First data chunk - check size
+               (progn
+                 (when (> (length data) (grpc-server-max-recv-msg-size server))
+                   (debug-log "SERVER: Message size ~D exceeds limit ~D~%"
+                             (length data) (grpc-server-max-recv-msg-size server))
+                   (server-send-response connection stream-id
+                                        nil +grpc-status-resource-exhausted+
+                                        (format nil "Message size ~D exceeds limit ~D bytes"
+                                                (length data) (grpc-server-max-recv-msg-size server))
+                                        nil)
+                   (return-from server-handle-data-frame nil))
+                 (setf (server-stream-state-data stream-state) (copy-seq data))))
 
            ;; Mark complete if END_STREAM
            (when end-stream
