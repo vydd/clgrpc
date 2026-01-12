@@ -572,6 +572,23 @@
    #:server-stream-recv
    #:with-bidirectional-stream
 
+   ;; Interceptors (middleware)
+   #:interceptor-info
+   #:make-interceptor-info
+   #:interceptor-info-service
+   #:interceptor-info-method
+   #:interceptor-info-rpc-type
+   #:add-unary-interceptor
+   #:add-stream-interceptor
+   #:execute-unary-interceptor-chain
+   #:execute-stream-interceptor-chain
+   ;; Built-in interceptors
+   #:logging-interceptor
+   #:stream-logging-interceptor
+   #:metadata-validator-interceptor
+   #:auth-interceptor
+   #:timeout-interceptor
+
    ;; Reflection service
    #:register-reflection-service
 

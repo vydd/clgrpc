@@ -72,7 +72,8 @@
      (:file "router")
      ;; (:file "service")  ; Replaced by CLOS-based service-clos in grpc module
      (:file "streaming")
+     (:file "interceptors")
      (:file "reflection-service")
-     (:file "server"))))
+     (:file "server" :depends-on ("interceptors")))))
 
   :in-order-to ((test-op (test-op "clgrpc-tests"))))

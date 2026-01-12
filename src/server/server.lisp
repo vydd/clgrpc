@@ -26,7 +26,11 @@
   (max-header-list-size 16384 :type fixnum)             ; 16KB (HTTP/2 default)
   (max-connections 0 :type fixnum)                      ; 0 = unlimited (not in grpc-go, our bonus)
   (keepalive-time 7200 :type fixnum)                    ; 2 hours idle timeout (seconds)
-  (keepalive-timeout 20 :type fixnum))                  ; 20s ping timeout (seconds)
+  (keepalive-timeout 20 :type fixnum)                   ; 20s ping timeout (seconds)
+
+  ;; Interceptors (middleware)
+  (unary-interceptors nil :type list)                   ; List of unary interceptor functions
+  (stream-interceptors nil :type list))                 ; List of stream interceptor functions
 
 ;;; Per-stream request state
 (defstruct server-stream-state
@@ -52,8 +56,10 @@
                      (max-header-list-size 16384)
                      (max-connections 0)
                      (keepalive-time 7200)
-                     (keepalive-timeout 20))
-  "Create a new gRPC server with optional resource limits.
+                     (keepalive-timeout 20)
+                     (unary-interceptors nil)
+                     (stream-interceptors nil))
+  "Create a new gRPC server with optional resource limits and interceptors.
 
    All arguments are optional with sensible defaults matching grpc-go.
 
@@ -66,6 +72,8 @@
      max-connections: Maximum total connections (default: 0 = unlimited, not in grpc-go)
      keepalive-time: Idle connection timeout in seconds (default: 7200 = 2 hours)
      keepalive-timeout: Ping timeout in seconds (default: 20)
+     unary-interceptors: List of unary interceptor functions (default: nil)
+     stream-interceptors: List of stream interceptor functions (default: nil)
 
    Returns:
      grpc-server
@@ -82,7 +90,10 @@
                   :max-recv-msg-size (* 1 1024 1024)    ; 1MB
                   :max-concurrent-streams 50
                   :max-connections 1000
-                  :keepalive-time 300)                  ; 5 minutes"
+                  :keepalive-time 300)                  ; 5 minutes
+
+     ;; Server with logging interceptor
+     (make-server :unary-interceptors (list #'logging-interceptor))"
   (make-grpc-server
    :port port
    :router (make-router)
@@ -92,7 +103,9 @@
    :max-header-list-size max-header-list-size
    :max-connections max-connections
    :keepalive-time keepalive-time
-   :keepalive-timeout keepalive-timeout))
+   :keepalive-timeout keepalive-timeout
+   :unary-interceptors unary-interceptors
+   :stream-interceptors stream-interceptors))
 
 (defun start-server (server)
   "Start the gRPC server (begin listening for connections).
@@ -219,6 +232,43 @@
   (bordeaux-threads:with-lock-held ((grpc-server-lock server))
     (loop for conn across (grpc-server-connections server)
           sum (hash-table-count (http2-connection-active-calls conn)))))
+
+;;; Interceptor Management
+
+(defun add-unary-interceptor (server interceptor)
+  "Add a unary interceptor to the server.
+
+   Interceptors are executed in the order they are added.
+
+   Args:
+     server: grpc-server
+     interceptor: Interceptor function with signature:
+                  (lambda (request-bytes context info continuation) ...)
+
+   Example:
+     (add-unary-interceptor server #'logging-interceptor)
+     (add-unary-interceptor server (auth-interceptor #'my-auth-fn))"
+  (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+    (setf (grpc-server-unary-interceptors server)
+          (append (grpc-server-unary-interceptors server)
+                  (list interceptor)))))
+
+(defun add-stream-interceptor (server interceptor)
+  "Add a stream interceptor to the server.
+
+   Interceptors are executed in the order they are added.
+
+   Args:
+     server: grpc-server
+     interceptor: Interceptor function with signature:
+                  (lambda (stream context info continuation) ...)
+
+   Example:
+     (add-stream-interceptor server #'stream-logging-interceptor)"
+  (bordeaux-threads:with-lock-held ((grpc-server-lock server))
+    (setf (grpc-server-stream-interceptors server)
+          (append (grpc-server-stream-interceptors server)
+                  (list interceptor)))))
 
 ;;; Connection Handling
 
@@ -453,7 +503,7 @@
 
                (bordeaux-threads:make-thread
                 (lambda () (server-handle-streaming-request
-                            handler service method stream context rpc-type))
+                            server handler service method stream context rpc-type))
                 :name (format nil "grpc-streaming-~D" stream-id)))))
 
           ;; Server-streaming - need to wait for request, use state accumulation
@@ -650,10 +700,11 @@
     ;; Flush outside the write lock
     (clgrpc.transport:buffered-flush socket)))
 
-(defun server-handle-streaming-request (handler service method stream context rpc-type)
+(defun server-handle-streaming-request (server handler service method stream context rpc-type)
   "Handle client-streaming or bidirectional streaming gRPC request.
 
    Args:
+     server: grpc-server
      handler: Handler instance
      service: Service name
      method: Method name
@@ -664,28 +715,35 @@
           service method rpc-type)
 
   (handler-case
-      (progn
-        ;; Dispatch to appropriate handler method
-        (ecase rpc-type
-          (:client-streaming
-           ;; Client streaming returns 4 values: response-bytes, status, message, metadata
-           (multiple-value-bind (response-bytes status-code status-message response-metadata)
-               (handle-client-streaming handler service method stream context)
-             (debug-log "SERVER: Client-streaming handler returned status=~D~%"
-                        status-code)
-             ;; Send response if provided
-             (when response-bytes
-               (server-stream-send stream response-bytes))
-             ;; Close stream with status
-             (server-stream-close stream status-code status-message response-metadata)))
-          (:bidirectional
-           ;; Bidirectional returns 3 values: status, message, metadata
-           (multiple-value-bind (status-code status-message response-metadata)
-               (handle-bidirectional-streaming handler service method stream context)
-             (debug-log "SERVER: Bidirectional handler returned status=~D~%"
-                        status-code)
-             ;; Close stream with status
-             (server-stream-close stream status-code status-message response-metadata)))))
+      (let* ((interceptors (grpc-server-stream-interceptors server))
+             (info (make-interceptor-info :service service
+                                          :method method
+                                          :rpc-type rpc-type))
+             (handler-fn (lambda (s ctx)
+                          (ecase rpc-type
+                            (:client-streaming
+                             ;; Client streaming returns 4 values: response-bytes, status, message, metadata
+                             (multiple-value-bind (response-bytes status-code status-message response-metadata)
+                                 (handle-client-streaming handler service method s ctx)
+                               (debug-log "SERVER: Client-streaming handler returned status=~D~%" status-code)
+                               ;; Send response if provided
+                               (when response-bytes
+                                 (server-stream-send s response-bytes))
+                               ;; Close stream with status
+                               (server-stream-close s status-code status-message response-metadata)))
+                            (:bidirectional
+                             ;; Bidirectional returns 3 values: status, message, metadata
+                             (multiple-value-bind (status-code status-message response-metadata)
+                                 (handle-bidirectional-streaming handler service method s ctx)
+                               (debug-log "SERVER: Bidirectional handler returned status=~D~%" status-code)
+                               ;; Close stream with status
+                               (server-stream-close s status-code status-message response-metadata)))))))
+
+        (if interceptors
+            ;; Execute interceptor chain
+            (execute-stream-interceptor-chain interceptors handler-fn stream context info)
+            ;; No interceptors - call handler directly
+            (funcall handler-fn stream context)))
 
     (error (e)
       ;; Error in handler - send INTERNAL error
@@ -694,10 +752,11 @@
                           (format nil "Internal error: ~A" e)
                           nil))))
 
-(defun server-handle-server-streaming-request (handler service method request-bytes stream context)
+(defun server-handle-server-streaming-request (server handler service method request-bytes stream context)
   "Handle server-streaming gRPC request.
 
    Args:
+     server: grpc-server
      handler: Handler instance
      service: Service name
      method: Method name
@@ -708,16 +767,22 @@
           service method (length request-bytes))
 
   (handler-case
-      (progn
-        ;; Call handler with request-bytes
-        (multiple-value-bind (status-code status-message response-metadata)
-            (handle-server-streaming handler service method request-bytes stream context)
+      (let* ((interceptors (grpc-server-stream-interceptors server))
+             (info (make-interceptor-info :service service
+                                          :method method
+                                          :rpc-type :server-streaming))
+             (handler-fn (lambda (s ctx)
+                          (multiple-value-bind (status-code status-message response-metadata)
+                              (handle-server-streaming handler service method request-bytes s ctx)
+                            (debug-log "SERVER: Server-streaming handler returned status=~D~%" status-code)
+                            ;; Close stream with status
+                            (server-stream-close s status-code status-message response-metadata)))))
 
-          (debug-log "SERVER: Server-streaming handler returned status=~D~%"
-                  status-code)
-
-          ;; Close stream with status
-          (server-stream-close stream status-code status-message response-metadata)))
+        (if interceptors
+            ;; Execute interceptor chain
+            (execute-stream-interceptor-chain interceptors handler-fn stream context info)
+            ;; No interceptors - call handler directly
+            (funcall handler-fn stream context)))
 
     (error (e)
       ;; Error in handler - send INTERNAL error
@@ -783,7 +848,7 @@
               ;; Spawn handler thread
               (bordeaux-threads:make-thread
                (lambda () (server-handle-server-streaming-request
-                           handler service method request-bytes stream context))
+                           server handler service method request-bytes stream context))
                :name (format nil "grpc-server-streaming-~D" stream-id))))
 
           ;; Unary RPC - route to handler
@@ -818,8 +883,6 @@
      request-bytes: Deserialized request bytes (protobuf message)
      context: handler-context
      rpc-type: RPC type (:unary, :client-streaming, :server-streaming, :bidirectional)"
-  (declare (ignore server))
-
   (debug-log "SERVER: Calling handler service=~A method=~A rpc-type=~A request-len=~D~%"
           service method rpc-type (length request-bytes))
 
@@ -835,17 +898,29 @@
   (handler-case
       (ecase rpc-type
         (:unary
-         ;; Unary RPC - call handler and send single response
-         (multiple-value-bind (response-bytes status-code status-message response-metadata)
-             (handle-unary handler service method request-bytes context)
+         ;; Unary RPC - execute interceptor chain, then call handler
+         (let* ((interceptors (grpc-server-unary-interceptors server))
+                (info (make-interceptor-info :service service
+                                             :method method
+                                             :rpc-type :unary))
+                (handler-fn (lambda (req ctx)
+                             (handle-unary handler service method req ctx))))
 
-           (debug-log "SERVER: Handler returned status=~D response-len=~D~%"
-                   status-code (if response-bytes (length response-bytes) 0))
+           (multiple-value-bind (response-bytes status-code status-message response-metadata)
+               (if interceptors
+                   ;; Execute interceptor chain
+                   (execute-unary-interceptor-chain interceptors handler-fn
+                                                    request-bytes context info)
+                   ;; No interceptors - call handler directly
+                   (funcall handler-fn request-bytes context))
 
-           ;; Send response
-           (server-send-response connection stream-id
-                                response-bytes status-code status-message
-                                response-metadata)))
+             (debug-log "SERVER: Handler returned status=~D response-len=~D~%"
+                     status-code (if response-bytes (length response-bytes) 0))
+
+             ;; Send response
+             (server-send-response connection stream-id
+                                  response-bytes status-code status-message
+                                  response-metadata))))
 
         ((:client-streaming :server-streaming :bidirectional)
          ;; Streaming RPC - not yet implemented
