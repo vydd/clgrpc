@@ -171,16 +171,20 @@
                 :elapsed-time elapsed-seconds))
               +grpc-status-ok+ nil nil))))
 
-;; RouteChat - Bidirectional streaming RPC
+;; RouteChat - Bidirectional streaming RPC (using with-bidirectional-stream)
 (defgrpc-method route-chat ((service route-guide-service-clos)
                             (request routeguide:route-note)
                             context)
   (:rpc-type :bidirectional)
-  (:documentation "Chat about a route")
+  (:documentation "Chat about a route using true concurrent bidirectional streaming")
   (declare (ignore service request))
-  (clgrpc.http2:debug-log "RouteChat: starting chat~%")
-  (let ((stream (clgrpc.server:get-stream context)))
-    (loop for msg-bytes = (server-stream-recv stream)
+  (clgrpc.http2:debug-log "RouteChat: starting chat (with concurrent send/recv)~%")
+
+  ;; Use the bidirectional streaming macro for true concurrent send/receive
+  (with-bidirectional-stream (send-note recv-note) context
+    ;; Loop receiving messages until client closes stream (recv-note returns nil)
+    ;; Don't use timeout - wait indefinitely for next message
+    (loop for msg-bytes = (recv-note)  ; Block until next message or stream closed
           while msg-bytes
           do (let ((note (proto-deserialize 'routeguide:route-note msg-bytes)))
                (clgrpc.http2:debug-log "  Received note at lat=~D lon=~D: ~A~%"
@@ -189,13 +193,16 @@
                                        (routeguide:point-longitude
                                         (routeguide:route-note-location note))
                                        (routeguide:route-note-message note))
+               ;; Send all previous notes at this location
                (let ((key (routeguide-clos-point-hash (routeguide:route-note-location note))))
                  (dolist (prev-note (gethash key *route-notes-clos*))
                    (clgrpc.http2:debug-log "    Sending previous note: ~A~%"
                                            (routeguide:route-note-message prev-note))
-                   (server-stream-send stream (proto-serialize prev-note)))
-                 (push note (gethash key *route-notes-clos*)))))
-    (values +grpc-status-ok+ nil nil)))
+                   (send-note (proto-serialize prev-note)))
+                 ;; Store this note for future chats
+                 (push note (gethash key *route-notes-clos*))))))
+
+  (values +grpc-status-ok+ nil nil))
 
 ;;; Main
 

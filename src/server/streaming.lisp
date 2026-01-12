@@ -53,6 +53,135 @@
   "Check if queue is empty."
   (null (car queue)))
 
+;;; Thread-Safe Queue for Bidirectional Streaming
+
+(defstruct bidi-queue
+  "Thread-safe blocking queue for bidirectional streaming message passing"
+  (items (cons nil nil))  ; Simple queue: (head . tail)
+  (lock (bordeaux-threads:make-lock "bidi-queue-lock"))
+  (cv (bordeaux-threads:make-condition-variable :name "bidi-queue-cv")))
+
+(defun bidi-queue-push (queue item)
+  "Add item to queue and notify waiting threads."
+  (bordeaux-threads:with-lock-held ((bidi-queue-lock queue))
+    (queue-push (bidi-queue-items queue) item)
+    (bordeaux-threads:condition-notify (bidi-queue-cv queue))))
+
+(defun bidi-queue-pop (queue timeout-ms receiver-done-fn)
+  "Remove and return item from queue.
+
+   Blocks until:
+   - An item is available, OR
+   - timeout-ms expires (if provided), OR
+   - receiver-done-fn returns true (stream closed)
+
+   Args:
+     queue: bidi-queue
+     timeout-ms: Timeout in milliseconds (or nil for no timeout)
+     receiver-done-fn: Function that returns true when receiver is done
+
+   Returns:
+     Message bytes, or NIL if timeout/closed"
+  (let ((start-time (get-internal-real-time))
+        (timeout-internal (when timeout-ms
+                           (* timeout-ms (/ internal-time-units-per-second 1000)))))
+    (bordeaux-threads:with-lock-held ((bidi-queue-lock queue))
+      (loop
+        ;; Try to get item
+        (let ((item (queue-pop (bidi-queue-items queue))))
+          (when item
+            (return item)))
+
+        ;; Check if receiver is done and queue is empty
+        (when (and (funcall receiver-done-fn) (queue-empty-p (bidi-queue-items queue)))
+          (return nil))
+
+        ;; Check timeout
+        (when timeout-internal
+          (let ((elapsed (- (get-internal-real-time) start-time)))
+            (when (>= elapsed timeout-internal)
+              (return nil))))
+
+        ;; Wait for item or timeout
+        (let ((remaining-time (when timeout-internal
+                               (- timeout-internal
+                                  (- (get-internal-real-time) start-time)))))
+          (bordeaux-threads:condition-wait
+           (bidi-queue-cv queue)
+           (bidi-queue-lock queue)
+           :timeout (when remaining-time
+                     (/ remaining-time internal-time-units-per-second))))))))
+
+;;; Bidirectional Streaming Helper Macro
+
+(defmacro with-bidirectional-stream ((send-fn recv-fn) context &body body)
+  "Enable true concurrent bidirectional streaming in a handler.
+
+   This macro spawns a background receiver thread, allowing your handler to
+   send and receive messages independently without blocking.
+
+   Args:
+     send-fn: Symbol for the send function (msg-bytes -> nil)
+     recv-fn: Symbol for the receive function (&optional timeout-ms -> msg-bytes or nil)
+     context: The handler context (must have grpc-stream in it)
+     body: Handler code that uses send-fn and recv-fn
+
+   The recv-fn takes an optional timeout in milliseconds. It returns:
+     - Message bytes if received
+     - NIL if timeout expires or stream is closed
+
+   The send-fn sends a message immediately (non-blocking).
+
+   Example:
+     (defgrpc-method route-chat ((service route-guide-service)
+                                 (request route-note)
+                                 context)
+       (:rpc-type :bidirectional)
+       (declare (ignore service request))
+
+       (with-bidirectional-stream (send-note recv-note) context
+         ;; Can send and receive concurrently!
+         (loop for note-bytes = (recv-note 100)  ; 100ms timeout
+               while note-bytes
+               do (let ((note (proto-deserialize 'route-note note-bytes)))
+                    (when-let ((reply (process-note note)))
+                      (send-note (proto-serialize reply))))))
+
+       (values +grpc-status-ok+ nil nil))"
+  (let ((stream-var (gensym "STREAM"))
+        (recv-queue (gensym "RECV-QUEUE"))
+        (receiver-done (gensym "RECEIVER-DONE"))
+        (receiver-error (gensym "RECEIVER-ERROR"))
+        (receiver-thread (gensym "RECEIVER-THREAD")))
+    `(let* ((,stream-var (get-stream ,context))
+            (,recv-queue (make-bidi-queue))
+            (,receiver-done nil)
+            (,receiver-error nil)
+            (,receiver-thread
+             (bordeaux-threads:make-thread
+              (lambda ()
+                (handler-case
+                    (loop for msg-bytes = (server-stream-recv ,stream-var)
+                          while msg-bytes
+                          do (bidi-queue-push ,recv-queue msg-bytes))
+                  (error (e)
+                    (setf ,receiver-error e)))
+                (setf ,receiver-done t))
+              :name "bidi-receiver")))
+       (unwind-protect
+           (flet ((,send-fn (msg-bytes)
+                    (when ,receiver-error
+                      (error "Receiver thread error: ~A" ,receiver-error))
+                    (server-stream-send ,stream-var msg-bytes))
+                  (,recv-fn (&optional (timeout-ms nil))
+                    (when ,receiver-error
+                      (error "Receiver thread error: ~A" ,receiver-error))
+                    (bidi-queue-pop ,recv-queue timeout-ms (lambda () ,receiver-done))))
+             ,@body)
+         ;; Cleanup: wait for receiver thread to finish
+         (when (bordeaux-threads:thread-alive-p ,receiver-thread)
+           (bordeaux-threads:join-thread ,receiver-thread :timeout 5))))))
+
 ;;; Stream Operations (called by handlers)
 
 (defun server-stream-recv (stream &key (timeout-ms nil))

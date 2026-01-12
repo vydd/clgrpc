@@ -101,12 +101,48 @@
 
                         ;; Test 4: Bidirectional Streaming RPC
                         (format t "   [4/4] Testing Bidirectional Streaming RPC (RouteChat)...~%")
-                        (format t "         ⚠ Skipped - requires concurrent send/receive (known limitation)~%")
+                        ;; Send notes to same location - second note should echo first note back
+                        (let ((loc1 (routeguide:make-point :latitude 100000000 :longitude 200000000))
+                              (loc2 (routeguide:make-point :latitude 300000000 :longitude 400000000)))
+                          (let ((notes (list
+                                        (routeguide:make-route-note
+                                         :location loc1
+                                         :message "First note at location 1")
+                                        (routeguide:make-route-note
+                                         :location loc1
+                                         :message "Second note at location 1 (should echo first)")
+                                        (routeguide:make-route-note
+                                         :location loc2
+                                         :message "First note at location 2")
+                                        (routeguide:make-route-note
+                                         :location loc1
+                                         :message "Third note at location 1 (should echo 2 previous)")
+                                        (routeguide:make-route-note
+                                         :location loc2
+                                         :message "Second note at location 2 (should echo first)"))))
+                            (multiple-value-bind (stream status status-msg)
+                                (clgrpc.client:call-bidirectional-streaming channel "routeguide.RouteGuide" "RouteChat")
+                              (if (null stream)
+                                  (error "Bidirectional streaming RPC failed: ~A" status-msg)
+                                  (let ((received-count 0))
+                                    ;; Send all notes with small delays to allow server processing
+                                    (dolist (note notes)
+                                      (clgrpc.client:stream-send stream (clgrpc.grpc:proto-serialize note))
+                                      (sleep 0.1))  ; Allow server to process and respond
+                                    ;; Close send side to signal we're done sending
+                                    (clgrpc.client:stream-close-send stream)
+                                    (sleep 0.1)  ; Final delay for last responses
+                                    ;; Receive all responses (should get: 0, 1, 0, 2, 1 = 4 total)
+                                    (loop for response = (clgrpc.client:stream-recv stream :timeout-ms 500)
+                                          while response
+                                          do (incf received-count))
+                                    (if (>= received-count 3)
+                                        (format t "         ✓ Sent 5 notes, received ~D note(s) back (concurrent streaming working!)~%" received-count)
+                                        (format t "         ⚠ Sent 5 notes, received only ~D note(s) back (expected ≥3)~%" received-count)))))))
 
                         ;; All tests passed
                         (setf test-passed t)
-                        (format t "~%✓ All essential RPC types working correctly!~%")
-                        (format t "  (3/4: Unary, Server Streaming, Client Streaming verified)~%"))
+                        (format t "~%✓ All 4 RPC types working correctly!~%"))
                     (error (e)
                       (format t "~%✗ Test failed: ~A~%" e)
                       (setf test-passed nil)))

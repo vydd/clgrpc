@@ -564,6 +564,7 @@
    #:grpc-server-stream
    #:server-stream-send
    #:server-stream-recv
+   #:with-bidirectional-stream
 
    ;; Reflection service
    #:register-reflection-service
