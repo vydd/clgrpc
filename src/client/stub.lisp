@@ -237,8 +237,9 @@
      SayHello → say-hello
      GetFeature → get-feature"
   (with-output-to-string (out)
-    (loop for char across string
-          for prev-char = nil then char
+    (loop for i from 0 below (length string)
+          for char = (char string i)
+          for prev-char = (when (plusp i) (char string (1- i)))
           do (cond
                ;; Insert hyphen before uppercase if previous was lowercase
                ((and (upper-case-p char)
