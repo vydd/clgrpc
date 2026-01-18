@@ -38,7 +38,6 @@
    Returns:
      Stream ID on success, signals error on failure"
   (let* ((conn (grpc-call-connection call))
-         (stream-id (http2-connection-next-stream-id conn))
          (hpack-ctx (http2-connection-hpack-encoder conn)))
 
     ;; Wait for connection to be ready (server SETTINGS received)
@@ -48,16 +47,15 @@
                                   (http2-connection-ready-lock conn)
                                   :timeout 5)))  ; 5 second timeout
 
-    ;; Store stream ID in call and increment for next call
-    (setf (grpc-call-stream-id call) stream-id)
-    (incf (http2-connection-next-stream-id conn) 2)  ; Clients use odd stream IDs
-
-    ;; Register call in connection for response handling BEFORE sending request
-    ;; This prevents race condition where response arrives before registration
-    ;; Lock protects concurrent access to active-calls hash table
-    (debug-log "REGISTER CALL: stream=~D~%" stream-id)
+    ;; Allocate stream ID and register call atomically
+    ;; CRITICAL: Must be inside lock to prevent race condition where multiple
+    ;; threads read the same stream ID before incrementing
     (bt:with-lock-held ((http2-connection-active-calls-lock conn))
-      (setf (gethash stream-id (http2-connection-active-calls conn)) call))
+      (let ((stream-id (http2-connection-next-stream-id conn)))
+        (setf (grpc-call-stream-id call) stream-id)
+        (incf (http2-connection-next-stream-id conn) 2)  ; Clients use odd stream IDs
+        (debug-log "REGISTER CALL: stream=~D~%" stream-id)
+        (setf (gethash stream-id (http2-connection-active-calls conn)) call)))
 
     ;; CRITICAL: Lock is required because:
     ;; 1. HPACK encoder has mutable state (dynamic table) shared across threads
@@ -80,7 +78,7 @@
                                 :length (length headers-bytes)
                                 :type +frame-type-headers+
                                 :flags +flag-end-headers+  ; No CONTINUATION for now
-                                :stream-id stream-id
+                                :stream-id (grpc-call-stream-id call)
                                 :payload headers-bytes)))
             (write-frame-to-stream headers-frame (http2-connection-socket conn) :flush nil))))
 
@@ -92,7 +90,7 @@
                            :length (length grpc-message)
                            :type +frame-type-data+
                            :flags +flag-end-stream+
-                           :stream-id stream-id
+                           :stream-id (grpc-call-stream-id call)
                            :payload grpc-message)))
           (write-frame-to-stream data-frame (http2-connection-socket conn) :flush nil))))
 
@@ -102,7 +100,7 @@
     ;; Update call state
     (setf (grpc-call-request-sent call) t)
 
-    stream-id))
+    (grpc-call-stream-id call)))
 
 ;;; Response Receiving
 

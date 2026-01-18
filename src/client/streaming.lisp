@@ -91,7 +91,6 @@
       (error "Stream already started"))
 
     (let* ((conn (grpc-stream-connection stream))
-           (stream-id (http2-connection-next-stream-id conn))
            (hpack-ctx (http2-connection-hpack-encoder conn)))
 
       ;; Wait for connection ready
@@ -101,13 +100,14 @@
                                     (http2-connection-ready-lock conn)
                                     :timeout 5)))
 
-      ;; Allocate stream ID
-      (setf (grpc-stream-stream-id stream) stream-id)
-      (incf (http2-connection-next-stream-id conn) 2)
-
-      ;; Register stream in connection (lock for concurrent access)
+      ;; Allocate stream ID and register stream atomically
+      ;; CRITICAL: Must be inside lock to prevent race condition where multiple
+      ;; threads read the same stream ID before incrementing
       (bt:with-lock-held ((http2-connection-active-calls-lock conn))
-        (setf (gethash stream-id (http2-connection-active-calls conn)) stream))
+        (let ((stream-id (http2-connection-next-stream-id conn)))
+          (setf (grpc-stream-stream-id stream) stream-id)
+          (incf (http2-connection-next-stream-id conn) 2)
+          (setf (gethash stream-id (http2-connection-active-calls conn)) stream)))
 
       ;; Build and send HEADERS frame (no END_STREAM for streaming)
       ;; Need connection write lock for HPACK encoder and socket writes
@@ -125,7 +125,7 @@
                                   :length (length headers-bytes)
                                   :type +frame-type-headers+
                                   :flags +flag-end-headers+
-                                  :stream-id stream-id
+                                  :stream-id (grpc-stream-stream-id stream)
                                   :payload headers-bytes)))
               (write-frame-to-stream headers-frame (http2-connection-socket conn) :flush nil)))))
 
@@ -133,7 +133,7 @@
       (clgrpc.transport:buffered-flush (http2-connection-socket conn))
 
       (setf (grpc-stream-headers-sent stream) t)
-      stream-id)))
+      (grpc-stream-stream-id stream))))
 
 (defun stream-send (stream message-bytes)
   "Send a message on the stream.
