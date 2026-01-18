@@ -63,14 +63,24 @@
 
     server))
 
+(defvar *test-port-counter* 50100
+  "Counter for allocating unique ports to tests")
+
+(defun get-next-test-port ()
+  "Get a unique port for each test to avoid conflicts"
+  (incf *test-port-counter*))
+
 (defun with-test-server (port fn)
-  "Run fn with a test server running on port"
-  (let ((server (make-test-server :port port)))
+  "Run fn with a test server running on port.
+   Note: port argument is ignored; a unique port is allocated instead."
+  (declare (ignore port))
+  (let* ((actual-port (get-next-test-port))
+         (server (make-test-server :port actual-port)))
     (unwind-protect
         (progn
           (clgrpc.server:start-server server)
-          (sleep 0.5)  ; Give server time to start
-          (funcall fn))
+          (sleep 0.3)  ; Give server time to start
+          (funcall fn actual-port))
       (clgrpc.server:stop-server server :timeout 5))))
 
 ;;; Channel Tests
@@ -106,8 +116,8 @@
 (test unary-call-basic
   "Test basic unary RPC call"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((request (babel:string-to-octets "Hello"))
                    (response (clgrpc.client:call-unary channel "test.Echo" "Unary" request)))
@@ -118,8 +128,8 @@
 (test unary-call-empty-message
   "Test unary call with empty message"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((request (make-array 0 :element-type '(unsigned-byte 8)))
                    (response (clgrpc.client:call-unary channel "test.Echo" "Unary" request)))
@@ -130,8 +140,8 @@
 (test unary-call-large-message
   "Test unary call with large message (1MB)"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((size (* 1024 1024))  ; 1MB
                    (request (make-array size :element-type '(unsigned-byte 8)
@@ -145,8 +155,8 @@
 (test unary-call-with-metadata
   "Test unary call with custom metadata"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((request (babel:string-to-octets "test"))
                    (metadata '(("x-custom-header" . "custom-value")
@@ -160,8 +170,8 @@
 (test unary-call-nonexistent-service
   "Test calling a non-existent service returns error"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (signals clgrpc.grpc:grpc-error
               (clgrpc.client:call-unary channel "test.NonExistent" "Method"
@@ -182,8 +192,8 @@
 (test client-streaming-basic
   "Test basic client streaming call"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let ((stream (clgrpc.client:call-client-streaming channel "test.Echo" "ClientStreaming")))
               ;; Send multiple messages
@@ -201,8 +211,8 @@
 (test client-streaming-empty-stream
   "Test client streaming with no messages sent"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let ((stream (clgrpc.client:call-client-streaming channel "test.Echo" "ClientStreaming")))
               ;; Close immediately without sending
@@ -214,8 +224,8 @@
 (test client-streaming-many-messages
   "Test client streaming with many small messages"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let ((stream (clgrpc.client:call-client-streaming channel "test.Echo" "ClientStreaming"))
                   (expected-length 0))
@@ -236,8 +246,8 @@
 (test server-streaming-basic
   "Test basic server streaming call"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((request (make-array 50 :element-type '(unsigned-byte 8)
                                        :initial-element 42))
@@ -260,8 +270,8 @@
 (test server-streaming-empty-response
   "Test server streaming with empty initial request"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let* ((request (make-array 0 :element-type '(unsigned-byte 8)))
                    (stream (clgrpc.client:call-server-streaming channel "test.Echo" "ServerStreaming" request))
@@ -280,8 +290,8 @@
 (test bidirectional-streaming-basic
   "Test basic bidirectional streaming"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let ((stream (clgrpc.client:call-bidirectional-streaming channel "test.Echo" "Bidirectional")))
               ;; Send and receive messages
@@ -304,8 +314,8 @@
 (test bidirectional-streaming-concurrent
   "Test bidirectional streaming with concurrent send/receive"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (let ((stream (clgrpc.client:call-bidirectional-streaming channel "test.Echo" "Bidirectional"))
                   (received nil)
@@ -340,8 +350,8 @@
 (test connection-pool-basic
   "Test connection pool creates and reuses connections"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             (progn
               ;; Make multiple calls - should reuse connection
@@ -354,8 +364,8 @@
 (test connection-pool-concurrent-calls
   "Test connection pool handles concurrent calls"
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil))
             (results (make-array 10 :initial-element nil))
             (threads nil))
         (unwind-protect
@@ -385,8 +395,8 @@
   "Test that timeout is enforced (if supported)"
   ;; Note: This test may need adjustment based on timeout implementation
   (with-test-server 50099
-    (lambda ()
-      (let ((channel (clgrpc.client:make-channel "localhost:50099" :secure nil)))
+    (lambda (port)
+      (let ((channel (clgrpc.client:make-channel (format nil "localhost:~D" port) :secure nil)))
         (unwind-protect
             ;; Try with very short timeout - may or may not fail depending on timing
             (let* ((request (babel:string-to-octets "test"))

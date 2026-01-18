@@ -893,6 +893,8 @@
                          nil +grpc-status-deadline-exceeded+
                          "Deadline exceeded before processing could begin"
                          nil)
+    ;; Clean up before returning
+    (remhash stream-id (http2-connection-active-calls connection))
     (return-from server-handle-request))
 
   (handler-case
@@ -936,7 +938,10 @@
       (server-send-response connection stream-id
                            nil +grpc-status-internal+
                            (format nil "Internal error: ~A" e)
-                           nil))))
+                           nil)))
+
+  ;; Clean up: remove stream from active-calls after response is sent
+  (remhash stream-id (http2-connection-active-calls connection)))
 
 (defun server-send-response (connection stream-id response-bytes status-code status-message response-metadata)
   "Send gRPC response (headers + data + trailers).
