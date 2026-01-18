@@ -104,8 +104,9 @@
 
         ;; Cleanup: unregister call from connection
         (when (grpc-call-stream-id call)
-          (remhash (grpc-call-stream-id call)
-                  (http2-connection-active-calls connection)))
+          (bt:with-lock-held ((http2-connection-active-calls-lock connection))
+            (remhash (grpc-call-stream-id call)
+                    (http2-connection-active-calls connection))))
 
         ;; Return connection to pool
         (pool-return-connection (grpc-channel-pool channel) connection)))))

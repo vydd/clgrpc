@@ -372,13 +372,18 @@
             (progn
               ;; Launch 10 concurrent calls
               (dotimes (i 10)
-                (push
-                 (bt:make-thread
-                  (lambda ()
-                    (let* ((request (babel:string-to-octets (format nil "Request ~D" i)))
-                           (response (clgrpc.client:call-unary channel "test.Echo" "Unary" request)))
-                      (setf (aref results i) (equalp response request)))))
-                 threads))
+                (let ((idx i))  ; Capture i's value, not reference
+                  (push
+                   (bt:make-thread
+                    (lambda ()
+                      (handler-case
+                          (let* ((request (babel:string-to-octets (format nil "Request ~D" idx)))
+                                 (response (clgrpc.client:call-unary channel "test.Echo" "Unary" request)))
+                            (setf (aref results idx) (equalp response request)))
+                        (error (e)
+                          (format *error-output* "Thread ~D error: ~A~%" idx e)
+                          (setf (aref results idx) nil)))))
+                   threads)))
 
               ;; Wait for all threads
               (dolist (thread threads)
@@ -612,5 +617,5 @@
     (is (string= (clgrpc.client::grpc-call-method call) "SayHello"))
     (is (= (clgrpc.client::grpc-call-timeout call) 10000))))
 
-;;; Run all tests
-(run! 'client-tests)
+;;; To run tests manually:
+;;; (fiveam:run! :client-tests)

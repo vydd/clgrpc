@@ -183,6 +183,7 @@
    #:http2-connection-is-client
    #:http2-connection-streams
    #:http2-connection-active-calls
+   #:http2-connection-active-calls-lock
    #:http2-connection-next-stream-id
    #:http2-connection-local-settings
    #:http2-connection-remote-settings

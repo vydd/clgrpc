@@ -54,8 +54,10 @@
 
     ;; Register call in connection for response handling BEFORE sending request
     ;; This prevents race condition where response arrives before registration
+    ;; Lock protects concurrent access to active-calls hash table
     (debug-log "REGISTER CALL: stream=~D~%" stream-id)
-    (setf (gethash stream-id (http2-connection-active-calls conn)) call)
+    (bt:with-lock-held ((http2-connection-active-calls-lock conn))
+      (setf (gethash stream-id (http2-connection-active-calls conn)) call))
 
     ;; CRITICAL: Lock is required because:
     ;; 1. HPACK encoder has mutable state (dynamic table) shared across threads

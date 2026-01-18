@@ -105,8 +105,9 @@
       (setf (grpc-stream-stream-id stream) stream-id)
       (incf (http2-connection-next-stream-id conn) 2)
 
-      ;; Register stream in connection
-      (setf (gethash stream-id (http2-connection-active-calls conn)) stream)
+      ;; Register stream in connection (lock for concurrent access)
+      (bt:with-lock-held ((http2-connection-active-calls-lock conn))
+        (setf (gethash stream-id (http2-connection-active-calls conn)) stream))
 
       ;; Build and send HEADERS frame (no END_STREAM for streaming)
       ;; Need connection write lock for HPACK encoder and socket writes
