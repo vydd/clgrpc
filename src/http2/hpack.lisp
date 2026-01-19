@@ -72,6 +72,42 @@
 (defconstant +hpack-static-table-size+ 61
   "Number of entries in static table")
 
+;;; Header Field Normalization (needed early for static table indexing)
+
+(defun normalize-header-field (field)
+  "Normalize header field (keyword or string) to lowercase string.
+   Handles both HTTP/2 pseudo-headers (keywords) and regular headers (strings)."
+  (etypecase field
+    (string field)
+    (keyword (string-downcase (symbol-name field)))
+    (symbol (string-downcase (symbol-name field)))))
+
+;;; Static Table Hash Indexes (for O(1) lookup)
+
+(defvar *static-exact-index* (make-hash-table :test 'equal)
+  "Hash table mapping (name . value) -> static table index for exact matches")
+
+(defvar *static-name-index* (make-hash-table :test 'equal)
+  "Hash table mapping name -> first static table index with that name")
+
+(defun initialize-static-table-indexes ()
+  "Build hash indexes for static table lookups. Called once at load time."
+  (clrhash *static-exact-index*)
+  (clrhash *static-name-index*)
+  (loop for i from 1 to +hpack-static-table-size+
+        for entry = (aref *hpack-static-table* i)
+        when entry
+        do (let ((norm-name (normalize-header-field (car entry)))
+                 (norm-value (normalize-header-field (cdr entry))))
+             ;; Exact match: (name . value) -> index
+             (setf (gethash (cons norm-name norm-value) *static-exact-index*) i)
+             ;; Name match: name -> first index (only if not already set)
+             (unless (gethash norm-name *static-name-index*)
+               (setf (gethash norm-name *static-name-index*) i)))))
+
+;; Initialize at load time
+(initialize-static-table-indexes)
+
 ;;; HPACK Dynamic Table
 
 (defstruct hpack-entry
@@ -162,37 +198,30 @@
 
 (defun hpack-find-index (context name value)
   "Find index of exact header match. Returns index or nil.
-   Normalizes name/value for comparison (handles keywords vs strings)."
-  (let ((norm-name (normalize-header-field name))
-        (norm-value (normalize-header-field value)))
-    ;; Search static table first, then dynamic table
-    (or (loop for i from 1 to +hpack-static-table-size+
-              for entry = (aref *hpack-static-table* i)
-              when (and entry
-                        (string= (normalize-header-field (car entry)) norm-name)
-                        (string= (normalize-header-field (cdr entry)) norm-value))
-              return i)
-        ;; Search dynamic table
+   Uses hash table for O(1) static table lookup."
+  (let* ((norm-name (normalize-header-field name))
+         (norm-value (normalize-header-field value))
+         (key (cons norm-name norm-value)))
+    ;; O(1) static table lookup via hash
+    (or (gethash key *static-exact-index*)
+        ;; Dynamic table: still need linear search (changes frequently)
+        ;; but dynamic tables are typically small
         (loop for i from 0 below (length (hpack-context-dynamic-table context))
               for entry = (aref (hpack-context-dynamic-table context) i)
-              when (and (string= (normalize-header-field (hpack-entry-name entry)) norm-name)
-                        (string= (normalize-header-field (hpack-entry-value entry)) norm-value))
+              when (and (string= (hpack-entry-name entry) norm-name)
+                        (string= (hpack-entry-value entry) norm-value))
               return (+ i +hpack-static-table-size+ 1)))))
 
 (defun hpack-find-name-index (context name)
   "Find index of header name (ignoring value). Returns index or nil.
-   Normalizes name for comparison (handles keywords vs strings)."
+   Uses hash table for O(1) static table lookup."
   (let ((norm-name (normalize-header-field name)))
-    ;; Search static table first, then dynamic table
-    (or (loop for i from 1 to +hpack-static-table-size+
-              for entry = (aref *hpack-static-table* i)
-              when (and entry
-                        (string= (normalize-header-field (car entry)) norm-name))
-              return i)
-        ;; Search dynamic table
+    ;; O(1) static table lookup via hash
+    (or (gethash norm-name *static-name-index*)
+        ;; Dynamic table: linear search (typically small)
         (loop for i from 0 below (length (hpack-context-dynamic-table context))
               for entry = (aref (hpack-context-dynamic-table context) i)
-              when (string= (normalize-header-field (hpack-entry-name entry)) norm-name)
+              when (string= (hpack-entry-name entry) norm-name)
               return (+ i +hpack-static-table-size+ 1)))))
 
 ;;; Integer Encoding/Decoding with Prefix (RFC 7541 Section 5.1)
@@ -241,14 +270,6 @@
           (values value offset)))))
 
 ;;; String Encoding/Decoding (RFC 7541 Section 5.2)
-
-(defun normalize-header-field (field)
-  "Normalize header field (keyword or string) to string.
-   Handles both HTTP/2 pseudo-headers (keywords) and regular headers (strings)."
-  (etypecase field
-    (string field)
-    (keyword (string-downcase (symbol-name field)))
-    (symbol (string-downcase (symbol-name field)))))
 
 (defun hpack-encode-string (string &key huffman)
   "Encode string for HPACK. Returns byte array.
