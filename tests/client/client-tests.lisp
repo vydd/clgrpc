@@ -10,61 +10,88 @@
 
 ;;; Test Utilities
 
+;;; Echo Handler - implements all RPC types for testing
+(defclass echo-handler ()
+  ()
+  (:documentation "Test handler that echoes requests back"))
+
+;; Unary: echo request bytes back
+(defmethod clgrpc.server:handle-unary ((handler echo-handler) service-name method-name request-bytes context)
+  (declare (ignore service-name method-name context))
+  (values request-bytes 0 nil nil))
+
+;; Client streaming: concatenate all received messages
+(defmethod clgrpc.server:handle-client-streaming ((handler echo-handler) service-name method-name stream context)
+  (declare (ignore service-name method-name context))
+  (let ((messages nil))
+    ;; Receive all messages from client
+    (loop for msg = (clgrpc.server:server-stream-recv stream)
+          while msg
+          do (push msg messages))
+    ;; Concatenate in order and return
+    (let ((result (apply #'concatenate '(vector (unsigned-byte 8)) (nreverse messages))))
+      (values result 0 nil nil))))
+
+;; Server streaming: split request into 10-byte chunks
+(defmethod clgrpc.server:handle-server-streaming ((handler echo-handler) service-name method-name request-bytes stream context)
+  (declare (ignore service-name method-name context))
+  (let ((len (length request-bytes))
+        (chunk-size 10))
+    ;; Send request in chunks
+    (loop for start from 0 below len by chunk-size
+          for end = (min (+ start chunk-size) len)
+          do (clgrpc.server:server-stream-send stream (subseq request-bytes start end)))
+    (values 0 nil nil)))
+
+;; Bidirectional streaming: echo each message back immediately
+(defmethod clgrpc.server:handle-bidirectional-streaming ((handler echo-handler) service-name method-name stream context)
+  (declare (ignore service-name method-name context))
+  ;; Echo each message back as we receive it
+  (loop for msg = (clgrpc.server:server-stream-recv stream)
+        while msg
+        do (clgrpc.server:server-stream-send stream msg))
+  (values 0 nil nil))
+
+(defvar *echo-handler* (make-instance 'echo-handler)
+  "Shared echo handler instance for tests")
+
 (defun make-test-server (&key (port 50099))
   "Create a test server for client tests"
   (let ((server (clgrpc.server:make-server :port port)))
-    ;; Register a simple echo service
-    ;; lambda-handler expands body within (lambda (service-name method-name request-bytes context) ...)
+    ;; Register echo handler for all RPC types
     (clgrpc.server:register-handler
      (clgrpc.server:grpc-server-router server)
      "test.Echo"
      "Unary"
-     (clgrpc.server:lambda-handler
-       ;; Echo back the request (request-bytes is bound in clgrpc.server package)
-       (values clgrpc.server::request-bytes 0 nil nil))
+     *echo-handler*
      :rpc-type :unary)
 
-    ;; For streaming handlers, we need to use make-function-handler directly
-    ;; since lambda-handler is designed for unary handlers
-    ;; Register client streaming echo (concatenates all messages)
     (clgrpc.server:register-handler
      (clgrpc.server:grpc-server-router server)
      "test.Echo"
      "ClientStreaming"
-     (clgrpc.server::make-function-handler
-       (lambda (service-name method-name request-bytes context)
-         (declare (ignore service-name method-name request-bytes context))
-         ;; This is a client-streaming handler but function-handler calls handle-unary
-         ;; For now, return unimplemented - the streaming tests need different setup
-         (values nil clgrpc.grpc:+grpc-status-unimplemented+ "Not implemented" nil)))
+     *echo-handler*
      :rpc-type :client-streaming)
 
-    ;; Register server streaming echo (splits message into chunks)
     (clgrpc.server:register-handler
      (clgrpc.server:grpc-server-router server)
      "test.Echo"
      "ServerStreaming"
-     (clgrpc.server::make-function-handler
-       (lambda (service-name method-name request-bytes context)
-         (declare (ignore service-name method-name request-bytes context))
-         (values nil clgrpc.grpc:+grpc-status-unimplemented+ "Not implemented" nil)))
+     *echo-handler*
      :rpc-type :server-streaming)
 
-    ;; Register bidirectional streaming echo
     (clgrpc.server:register-handler
      (clgrpc.server:grpc-server-router server)
      "test.Echo"
      "Bidirectional"
-     (clgrpc.server::make-function-handler
-       (lambda (service-name method-name request-bytes context)
-         (declare (ignore service-name method-name request-bytes context))
-         (values nil clgrpc.grpc:+grpc-status-unimplemented+ "Not implemented" nil)))
+     *echo-handler*
      :rpc-type :bidirectional)
 
     server))
 
-(defvar *test-port-counter* 50100
-  "Counter for allocating unique ports to tests")
+(defvar *test-port-counter* (+ 50100 (random 1000))
+  "Counter for allocating unique ports to tests.
+   Randomized to avoid TIME_WAIT conflicts between test runs.")
 
 (defun get-next-test-port ()
   "Get a unique port for each test to avoid conflicts"
