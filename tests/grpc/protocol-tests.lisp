@@ -66,11 +66,22 @@
     ;; Message payload
     (is (equalp (subseq framed 5) message))))
 
-(test message-frame-encode-compressed
-  "Test gRPC message encoding with compression flag"
+(test message-frame-encode-with-encoding
+  "Test gRPC message encoding with compression"
+  ;; Small message - should NOT be compressed (below threshold)
   (let* ((message (bytes 1 2 3))
-         (framed (encode-grpc-message message :compressed t)))
-    (is (= (aref framed 0) 1))))  ; Compressed flag
+         (framed (encode-grpc-message message :encoding +compression-gzip+)))
+    (is (= (aref framed 0) 0)))  ; Not compressed (below threshold)
+
+  ;; Large message - should be compressed
+  (let* ((message (make-array 2000 :element-type '(unsigned-byte 8) :initial-element 65))
+         (framed (encode-grpc-message message :encoding +compression-gzip+)))
+    (is (= (aref framed 0) 1)))  ; Compressed flag set
+
+  ;; No encoding - should not be compressed
+  (let* ((message (make-array 2000 :element-type '(unsigned-byte 8) :initial-element 65))
+         (framed (encode-grpc-message message)))
+    (is (= (aref framed 0) 0))))  ; Not compressed
 
 (test message-frame-decode-basic
   "Test basic gRPC message decoding"
@@ -289,3 +300,130 @@
                     (declare (ignore comp bytes))
                     msg)))
     (is (equalp decoded message))))
+
+;;; Compression Tests
+
+(test gzip-compress-decompress-basic
+  "Test basic gzip compression/decompression round-trip"
+  (let* ((original (babel:string-to-octets "Hello, World! This is a test message."))
+         (compressed (gzip-compress original))
+         (decompressed (gzip-decompress compressed)))
+    (is (equalp decompressed original))))
+
+(test gzip-compress-empty
+  "Test gzip compression of empty data"
+  (let* ((original (make-array 0 :element-type '(unsigned-byte 8)))
+         (compressed (gzip-compress original)))
+    (is (equalp compressed original))))  ; Empty input returns empty output
+
+(test gzip-compress-large-message
+  "Test gzip compression of large message"
+  (let* ((original (make-array 10000 :element-type '(unsigned-byte 8) :initial-element 65))
+         (compressed (gzip-compress original))
+         (decompressed (gzip-decompress compressed)))
+    ;; Compression should reduce size significantly for repetitive data
+    (is (< (length compressed) (length original)))
+    (is (equalp decompressed original))))
+
+(test gzip-compress-high-entropy
+  "Test gzip compression of high-entropy data"
+  (let* ((original (make-array 1000 :element-type '(unsigned-byte 8)))
+         (_ (dotimes (i 1000) (setf (aref original i) (mod i 256))))
+         (compressed (gzip-compress original))
+         (decompressed (gzip-decompress compressed)))
+    (declare (ignore _))
+    (is (equalp decompressed original))))
+
+(test compress-message-gzip
+  "Test compress-message with gzip"
+  (let* ((original (make-array 2000 :element-type '(unsigned-byte 8) :initial-element 42)))
+    (multiple-value-bind (compressed actually-compressed)
+        (compress-message original +compression-gzip+)
+      (is-true actually-compressed)
+      (is (< (length compressed) (length original))))))
+
+(test compress-message-identity
+  "Test compress-message with identity (no compression)"
+  (let* ((original (make-array 2000 :element-type '(unsigned-byte 8) :initial-element 42)))
+    (multiple-value-bind (result actually-compressed)
+        (compress-message original +compression-none+)
+      (is (not actually-compressed))
+      (is (equalp result original)))))
+
+(test compress-message-nil
+  "Test compress-message with nil encoding"
+  (let* ((original (bytes 1 2 3 4 5)))
+    (multiple-value-bind (result actually-compressed)
+        (compress-message original nil)
+      (is (not actually-compressed))
+      (is (equalp result original)))))
+
+(test decompress-message-gzip
+  "Test decompress-message with gzip"
+  (let* ((original (babel:string-to-octets "Test message for decompression"))
+         (compressed (gzip-compress original))
+         (decompressed (decompress-message compressed +compression-gzip+)))
+    (is (equalp decompressed original))))
+
+(test decompress-message-identity
+  "Test decompress-message with identity"
+  (let* ((original (bytes 1 2 3 4 5))
+         (result (decompress-message original +compression-none+)))
+    (is (equalp result original))))
+
+(test compression-threshold
+  "Test compression threshold behavior"
+  (let ((*compression-threshold* 100))
+    ;; Below threshold - should NOT compress
+    (let ((small-msg (make-array 50 :element-type '(unsigned-byte 8) :initial-element 65)))
+      (is (not (should-compress-p small-msg +compression-gzip+))))
+
+    ;; Above threshold - should compress
+    (let ((large-msg (make-array 200 :element-type '(unsigned-byte 8) :initial-element 65)))
+      (is (should-compress-p large-msg +compression-gzip+)))
+
+    ;; No encoding - should NOT compress regardless of size
+    (let ((large-msg (make-array 200 :element-type '(unsigned-byte 8) :initial-element 65)))
+      (is (not (should-compress-p large-msg nil)))
+      (is (not (should-compress-p large-msg +compression-none+))))))
+
+(test grpc-message-compression-round-trip
+  "Test full gRPC message compression round-trip"
+  (let* ((original (make-array 2000 :element-type '(unsigned-byte 8)))
+         (_ (dotimes (i 2000) (setf (aref original i) (mod (* i 7) 256))))
+         (encoded (encode-grpc-message original :encoding +compression-gzip+)))
+    (declare (ignore _))
+    ;; Should be compressed
+    (is (= (aref encoded 0) 1))
+    ;; Decode and verify
+    (multiple-value-bind (decoded compressed-flag bytes-read)
+        (decode-grpc-message encoded)
+      (declare (ignore bytes-read))
+      (is (= compressed-flag 1))
+      (is (equalp decoded original)))))
+
+(test grpc-message-no-compression-round-trip
+  "Test gRPC message without compression round-trip"
+  (let* ((original (make-array 2000 :element-type '(unsigned-byte 8) :initial-element 42))
+         (encoded (encode-grpc-message original)))
+    ;; Should NOT be compressed
+    (is (= (aref encoded 0) 0))
+    ;; Decode and verify
+    (multiple-value-bind (decoded compressed-flag bytes-read)
+        (decode-grpc-message encoded)
+      (declare (ignore bytes-read))
+      (is (= compressed-flag 0))
+      (is (equalp decoded original)))))
+
+(test supported-encoding-check
+  "Test supported encoding check"
+  (is (supported-encoding-p +compression-gzip+))
+  (is (supported-encoding-p +compression-none+))
+  (is (not (supported-encoding-p "snappy")))
+  (is (not (supported-encoding-p "lz4"))))
+
+(test format-accept-encoding-header
+  "Test format-accept-encoding helper"
+  (let ((header (format-accept-encoding)))
+    (is (search "gzip" header))
+    (is (search "identity" header))))

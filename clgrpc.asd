@@ -14,6 +14,8 @@
                #:fast-io
                #:babel
                #:closer-mop  ; For protobuf CLOS metaclass
+               #:chipz        ; For gzip decompression
+               #:salza2       ; For gzip compression
                ) ;; ieee-floats not needed - we implement float encoding ourselves
   :pathname "src"
   :serial t
@@ -41,9 +43,10 @@
     :components
     ((:file "status")
      (:file "errors")
+     (:file "compression")
      (:file "metadata")
      (:file "message")
-     (:file "protocol")
+     (:file "protocol" :depends-on ("compression"))
      (:file "protobuf-simple")
      (:file "proto-clos" :depends-on ("protobuf-simple"))
      (:file "service-clos" :depends-on ("proto-clos"))

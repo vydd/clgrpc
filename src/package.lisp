@@ -367,6 +367,21 @@
    #:signal-grpc-data-loss
    #:signal-grpc-unauthenticated
 
+   ;; Compression
+   #:+compression-none+
+   #:+compression-gzip+
+   #:+compression-deflate+
+   #:*supported-encodings*
+   #:*default-compression*
+   #:*compression-threshold*
+   #:gzip-compress
+   #:gzip-decompress
+   #:compress-message
+   #:decompress-message
+   #:should-compress-p
+   #:supported-encoding-p
+   #:format-accept-encoding
+
    ;; Protocol
    #:+grpc-compressed-flag-none+
    #:+grpc-compressed-flag-gzip+

@@ -24,12 +24,12 @@
 
 ;;; gRPC Message Encoding
 
-(defun encode-grpc-message (message-bytes &key (compressed nil))
+(defun encode-grpc-message (message-bytes &key (encoding nil))
   "Encode a gRPC message with length-prefix framing.
 
    Args:
      message-bytes: Byte array of serialized protobuf message
-     compressed: If T, mark as compressed (compression not yet implemented)
+     encoding: Compression encoding to use (\"gzip\", \"identity\", or nil for none)
 
    Returns:
      Byte array with gRPC framing (5-byte header + message)
@@ -37,27 +37,33 @@
    Format:
      [0]     Compressed-Flag (0 or 1)
      [1-4]   Message-Length (big-endian uint32)
-     [5...]  Message payload"
-  (let* ((message-length (length message-bytes))
-         (total-length (+ +grpc-message-header-size+ message-length))
-         (result (make-byte-array total-length))
-         (compressed-flag (if compressed +grpc-compressed-flag-gzip+ +grpc-compressed-flag-none+)))
+     [5...]  Message payload (possibly compressed)"
+  ;; Apply compression if specified and worthwhile
+  (multiple-value-bind (payload actually-compressed)
+      (if (should-compress-p message-bytes encoding)
+          (compress-message message-bytes encoding)
+          (values message-bytes nil))
 
-    (when (> message-length +grpc-max-message-size+)
-      (signal-grpc-resource-exhausted
-       (format nil "Message too large: ~D bytes (max ~D)"
-               message-length +grpc-max-message-size+)))
+    (let* ((message-length (length payload))
+           (total-length (+ +grpc-message-header-size+ message-length))
+           (result (make-byte-array total-length))
+           (compressed-flag (if actually-compressed +grpc-compressed-flag-gzip+ +grpc-compressed-flag-none+)))
 
-    ;; Compressed flag
-    (setf (aref result 0) compressed-flag)
+      (when (> message-length +grpc-max-message-size+)
+        (signal-grpc-resource-exhausted
+         (format nil "Message too large: ~D bytes (max ~D)"
+                 message-length +grpc-max-message-size+)))
 
-    ;; Message length (big-endian uint32)
-    (encode-uint32-be message-length result 1)
+      ;; Compressed flag
+      (setf (aref result 0) compressed-flag)
 
-    ;; Message payload
-    (replace result message-bytes :start1 +grpc-message-header-size+)
+      ;; Message length (big-endian uint32)
+      (encode-uint32-be message-length result 1)
 
-    result))
+      ;; Message payload
+      (replace result payload :start1 +grpc-message-header-size+)
+
+      result)))
 
 (defun decode-grpc-message-header (bytes &optional (offset 0))
   "Decode gRPC message header (5 bytes).
@@ -94,7 +100,7 @@
    Returns:
      (values message-bytes compressed-flag total-bytes-read)
 
-   The message-bytes are the raw protobuf payload (not yet deserialized).
+   The message-bytes are the raw protobuf payload (decompressed if needed).
    Caller must deserialize using appropriate protobuf message type."
   (multiple-value-bind (compressed-flag message-length)
       (decode-grpc-message-header bytes offset)
@@ -107,11 +113,10 @@
          (format nil "Incomplete gRPC message: need ~D bytes, have ~D"
                  message-end (length bytes))))
 
-      ;; TODO: Handle decompression if compressed-flag is set
-      (when (= compressed-flag +grpc-compressed-flag-gzip+)
-        (signal-grpc-unimplemented "Message compression not yet supported"))
-
-      (let ((message-bytes (subseq bytes header-end message-end)))
+      (let* ((raw-payload (subseq bytes header-end message-end))
+             (message-bytes (if (= compressed-flag +grpc-compressed-flag-gzip+)
+                                (decompress-message raw-payload +compression-gzip+)
+                                raw-payload)))
         (values message-bytes compressed-flag (- message-end offset))))))
 
 (defun read-grpc-message-from-stream (stream)
@@ -120,7 +125,8 @@
    Returns:
      (values message-bytes compressed-flag)
 
-   Returns NIL if EOF reached before header."
+   Returns NIL if EOF reached before header.
+   Message is automatically decompressed if compressed."
   (let ((header (make-byte-array +grpc-message-header-size+)))
 
     ;; Read header
@@ -137,23 +143,27 @@
         (decode-grpc-message-header header)
 
       ;; Read message payload
-      (let ((message-bytes (make-byte-array message-length)))
-        (let ((bytes-read (read-sequence message-bytes stream)))
+      (let ((raw-payload (make-byte-array message-length)))
+        (let ((bytes-read (read-sequence raw-payload stream)))
           (when (< bytes-read message-length)
             (signal-grpc-internal
              (format nil "Incomplete gRPC message: expected ~D bytes, got ~D"
                      message-length bytes-read))))
 
-        (values message-bytes compressed-flag)))))
+        ;; Decompress if needed
+        (let ((message-bytes (if (= compressed-flag +grpc-compressed-flag-gzip+)
+                                  (decompress-message raw-payload +compression-gzip+)
+                                  raw-payload)))
+          (values message-bytes compressed-flag))))))
 
-(defun write-grpc-message-to-stream (stream message-bytes &key (compressed nil))
+(defun write-grpc-message-to-stream (stream message-bytes &key (encoding nil))
   "Write a gRPC message to a stream with framing.
 
    Args:
      stream: Output stream
      message-bytes: Serialized protobuf message
-     compressed: If T, mark as compressed"
-  (let ((framed-message (encode-grpc-message message-bytes :compressed compressed)))
+     encoding: Compression encoding to use (\"gzip\", \"identity\", or nil)"
+  (let ((framed-message (encode-grpc-message message-bytes :encoding encoding)))
     (write-sequence framed-message stream)
     (force-output stream)))
 
@@ -177,17 +187,17 @@
 
     (nreverse messages)))
 
-(defun join-grpc-messages (message-list &key (compressed nil))
+(defun join-grpc-messages (message-list &key (encoding nil))
   "Join multiple gRPC messages into a single byte array.
 
    Args:
      message-list: List of message-bytes (serialized protobuf messages)
-     compressed: If T, mark all messages as compressed
+     encoding: Compression encoding to use (\"gzip\", \"identity\", or nil)
 
    Returns:
      Byte array containing all framed messages concatenated"
   (let* ((framed-messages (mapcar (lambda (msg)
-                                    (encode-grpc-message msg :compressed compressed))
+                                    (encode-grpc-message msg :encoding encoding))
                                   message-list))
          (total-length (reduce #'+ framed-messages :key #'length))
          (result (make-byte-array total-length))
