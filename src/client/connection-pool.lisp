@@ -310,6 +310,18 @@
            (setf (http2-connection-settings-received connection) t)
            (bt:condition-notify (http2-connection-ready-cv connection)))))
 
+      ((= frame-type +frame-type-ping+)
+       ;; Respond to PING with PING ACK (RFC 7540 Section 6.7)
+       (when (zerop (logand (frame-flags frame) +flag-ack+))
+         ;; Not an ACK - server sent PING, echo back with ACK flag
+         (let ((ack-frame (make-http2-frame
+                           :length 8
+                           :type +frame-type-ping+
+                           :flags +flag-ack+
+                           :stream-id 0
+                           :payload (frame-payload frame))))  ; Echo same 8 bytes
+           (write-frame-to-stream ack-frame (http2-connection-socket connection)))))
+
       ((= frame-type +frame-type-goaway+)
        ;; Server is shutting down connection
        (setf (http2-connection-goaway-received connection) t)))))
