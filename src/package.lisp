@@ -527,6 +527,11 @@
    #:close-channel
    #:call-unary
 
+   ;; Channel state management
+   #:channel-state
+   #:wait-for-state-change
+   #:wait-for-ready
+
    ;; Streaming API
    #:call-client-streaming
    #:call-server-streaming

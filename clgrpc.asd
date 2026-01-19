@@ -65,8 +65,9 @@
     :components
     ((:file "call")
      (:file "streaming")
-     (:file "connection-pool")
-     (:file "client")
+     (:file "channel-state")
+     (:file "connection-pool" :depends-on ("channel-state"))
+     (:file "client" :depends-on ("channel-state" "connection-pool"))
      (:file "stub")))
 
    (:module "server"

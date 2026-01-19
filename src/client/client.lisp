@@ -1,18 +1,11 @@
 ;;;; client.lisp - High-level gRPC client API
 ;;;
 ;;; User-facing API for making gRPC calls
+;;; Note: grpc-channel struct and state functions are in channel-state.lisp
 
 (in-package #:clgrpc.client)
 
-;;; Channel - represents a connection to a gRPC server
-
-(defstruct grpc-channel
-  "gRPC channel (connection to server)"
-  (target "" :type string)
-  (pool nil :type (or null connection-pool))
-  (active-calls (make-hash-table) :type hash-table)  ; stream-id -> grpc-call
-  (calls-lock (bordeaux-threads:make-lock "channel-calls-lock"))
-  (closed nil :type boolean))
+;;; Channel Creation
 
 (defun make-channel (target &key (secure t))
   "Create a gRPC channel to the specified target.
@@ -22,13 +15,18 @@
      secure: Use TLS if true (default: true for production)
 
    Returns:
-     grpc-channel
+     grpc-channel (in :idle state, connects lazily on first RPC)
 
    Example:
      (make-channel \"localhost:50051\" :secure nil)"
-  (make-grpc-channel
-   :target target
-   :pool (make-grpc-connection-pool target :secure secure)))
+  (let* ((pool (make-grpc-connection-pool target :secure secure))
+         (channel (make-grpc-channel
+                   :target target
+                   :pool pool
+                   :state :idle)))
+    ;; Set back-reference so pool can update channel state
+    (setf (connection-pool-channel pool) channel)
+    channel))
 
 (defun close-channel (channel)
   "Close a gRPC channel and all its connections.
@@ -38,11 +36,14 @@
 
    Side effects:
      Closes all pooled connections
-     Marks channel as closed"
+     Marks channel as closed
+     Sets channel state to :shutdown"
   (bordeaux-threads:with-lock-held ((grpc-channel-calls-lock channel))
     (setf (grpc-channel-closed channel) t)
     (pool-close-all (grpc-channel-pool channel))
-    (clrhash (grpc-channel-active-calls channel))))
+    (clrhash (grpc-channel-active-calls channel)))
+  ;; Set shutdown state (outside the calls-lock to avoid nested locking)
+  (channel-set-state channel :shutdown))
 
 ;;; Unary RPC
 

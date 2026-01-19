@@ -12,7 +12,8 @@
   (secure t :type boolean)
   (connections (make-array 0 :adjustable t :fill-pointer 0))
   (max-connections 10 :type fixnum)
-  (lock (bordeaux-threads:make-lock "connection-pool-lock")))
+  (lock (bordeaux-threads:make-lock "connection-pool-lock"))
+  (channel nil))  ; Back-reference to grpc-channel for state updates
 
 (defun make-grpc-connection-pool (target &key (secure t) (max-connections 10))
   "Create a connection pool for a gRPC target.
@@ -36,28 +37,65 @@
      pool: connection-pool structure
 
    Returns:
-     http2-connection"
-  (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
-    ;; Try to reuse existing connection
-    (let ((existing (find-if (lambda (conn)
-                              (and (not (connection-is-closed-p conn))
-                                   (not (http2-connection-goaway-received conn))))
-                            (connection-pool-connections pool))))
-      (when existing
-        (return-from pool-get-connection existing)))
+     http2-connection
 
-    ;; Create new connection if under limit
-    (when (< (length (connection-pool-connections pool))
-             (connection-pool-max-connections pool))
-      (let ((new-conn (create-http2-connection
-                       (connection-pool-target pool)
-                       :secure (connection-pool-secure pool))))
-        (vector-push-extend new-conn (connection-pool-connections pool))
-        (return-from pool-get-connection new-conn)))
+   Side effects:
+     Updates channel state to :connecting/:ready as appropriate"
+  (let ((channel (connection-pool-channel pool))
+        (need-new-connection nil)
+        (existing-connection nil))
 
-    ;; Wait for connection to become available (for now, just return first)
+    ;; Check pool state under lock
+    (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
+      ;; Try to reuse existing connection
+      (let ((existing (find-if (lambda (conn)
+                                (and (not (connection-is-closed-p conn))
+                                     (not (http2-connection-goaway-received conn))))
+                              (connection-pool-connections pool))))
+        (when existing
+          (setf existing-connection existing)))
+
+      ;; Need to create new connection?
+      (when (and (null existing-connection)
+                 (< (length (connection-pool-connections pool))
+                    (connection-pool-max-connections pool)))
+        (setf need-new-connection t)))
+
+    ;; Handle existing connection (already ready)
+    (when existing-connection
+      (when channel
+        (channel-set-state channel :ready))
+      (return-from pool-get-connection existing-connection))
+
+    ;; Create new connection outside the lock
+    (when need-new-connection
+      ;; Set connecting state before attempting connection
+      (when channel
+        (channel-set-state channel :connecting))
+
+      (handler-case
+          (let ((new-conn (create-http2-connection
+                           (connection-pool-target pool)
+                           :secure (connection-pool-secure pool)
+                           :channel channel)))
+            ;; Add to pool under lock
+            (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
+              (vector-push-extend new-conn (connection-pool-connections pool)))
+            ;; Connection successful - set ready
+            (when channel
+              (channel-set-state channel :ready))
+            (return-from pool-get-connection new-conn))
+        (error (e)
+          ;; Connection failed - set transient failure
+          (when channel
+            (channel-set-state channel :transient-failure))
+          (error e))))
+
+    ;; Fallback: wait for connection (for now, just return first)
     ;; TODO: Implement proper waiting/queueing
-    (aref (connection-pool-connections pool) 0)))
+    (bordeaux-threads:with-lock-held ((connection-pool-lock pool))
+      (when (> (length (connection-pool-connections pool)) 0)
+        (aref (connection-pool-connections pool) 0)))))
 
 (defun pool-return-connection (pool connection)
   "Return a connection to the pool (no-op for now, connection stays in pool).
@@ -105,12 +143,13 @@
 
 ;;; HTTP/2 Connection Creation
 
-(defun create-http2-connection (target &key (secure t))
+(defun create-http2-connection (target &key (secure t) channel)
   "Create and establish an HTTP/2 connection to target.
 
    Args:
      target: Host:port string (e.g., \"localhost:50051\")
      secure: Use TLS if true
+     channel: Optional grpc-channel for state updates on disconnect
 
    Returns:
      http2-connection (connected and ready)
@@ -154,7 +193,7 @@
           (http2-send-settings conn nil)  ; Empty settings for now
 
           ;; NOW start frame reader thread to receive server SETTINGS
-          (start-connection-frame-reader conn)
+          (start-connection-frame-reader conn :channel channel)
 
           conn)))))
 
@@ -186,8 +225,12 @@
                   :payload payload)))
       (write-frame-to-stream frame (http2-connection-socket connection)))))
 
-(defun start-connection-frame-reader (connection)
+(defun start-connection-frame-reader (connection &key channel)
   "Start background thread to read frames from connection.
+
+   Args:
+     connection: http2-connection to read from
+     channel: Optional grpc-channel for state updates on disconnect
 
    Thread reads frames in loop and dispatches to appropriate handlers."
   (bordeaux-threads:make-thread
@@ -207,7 +250,10 @@
        (error (e)
          ;; Log error and close connection
          (debug-log "Frame reader error: ~A~%" e)
-         (connection-close connection))))
+         (connection-close connection)))
+     ;; Connection ended (EOF or error) - update channel state
+     (when channel
+       (channel-set-state channel :transient-failure)))
    :name "http2-frame-reader"))
 
 (defun dispatch-frame-to-call (connection frame)
