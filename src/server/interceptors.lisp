@@ -158,18 +158,19 @@
      (add-unary-interceptor server
        (metadata-validator-interceptor '(\"authorization\")))"
   (lambda (request-bytes context info continuation)
-    (let ((metadata (handler-context-metadata context)))
-      ;; Check for required keys
-      (dolist (key required-keys)
-        (unless (assoc key metadata :test #'string-equal)
-          ;; Missing required key - return error
-          (return-from metadata-validator-interceptor
-            (values nil
-                    +grpc-status-unauthenticated+
-                    (format nil "Missing required metadata: ~A" key)
-                    nil))))
-      ;; All required keys present - continue
-      (funcall continuation request-bytes context))))
+    (block validate
+      (let ((metadata (handler-context-metadata context)))
+        ;; Check for required keys
+        (dolist (key required-keys)
+          (unless (assoc key metadata :test #'string-equal)
+            ;; Missing required key - return error
+            (return-from validate
+              (values nil
+                      +grpc-status-unauthenticated+
+                      (format nil "Missing required metadata: ~A" key)
+                      nil))))
+        ;; All required keys present - continue
+        (funcall continuation request-bytes context)))))
 
 (defun auth-interceptor (auth-fn)
   "Creates an interceptor that authenticates requests using auth-fn.
